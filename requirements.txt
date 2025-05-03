@@ -1,0 +1,5 @@
+watchdog
+openai-whisper
+ffmpeg-python
+rich
+requests 
