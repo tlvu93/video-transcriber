@@ -12,15 +12,15 @@ services:
       - ollama
     environment:
       - LLM_HOST=http://ollama:11434/api/generate
-      - LLM_MODEL=deepseek
+      - LLM_MODEL=deepseek-r1
     restart: unless-stopped
 
   ollama:
     image: ollama/ollama:latest
     volumes:
       - ./ollama-data:/root/.ollama
+      - ./ollama-entrypoint.sh:/ollama-entrypoint.sh
     ports:
       - "11434:11434"
-    command: >
-      sh -c "ollama pull deepseek && ollama serve"
     restart: unless-stopped
+    entrypoint: ["/ollama-entrypoint.sh"]

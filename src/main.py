@@ -18,21 +18,30 @@ def main():
         path = os.path.join(VIDEO_DIR, fname)
         file_hash = get_file_hash(path)
         
+        # Skip files that couldn't be accessed
+        if file_hash is None:
+            print(f"⚠️  Skipping inaccessible file: {fname}")
+            continue
+            
+        # Skip files that have already been processed
         if file_hash in db:
             print(f"⚠️  Skipping duplicate: {fname}")
             continue
         
-        print(f"📥 New file found: {fname}")
-        transcript, metadata, summary = process_video(path)
-        
-        db[file_hash] = {
-            "filename": fname,
-            "transcript_preview": transcript[:100],
-            "summary_preview": summary[:100] if summary else "No summary available",
-            "metadata": metadata
-        }
-        save_db(db)
-        print(f"✅ Done: {fname}")
+        try:
+            print(f"📥 New file found: {fname}")
+            transcript, metadata, summary = process_video(path)
+            
+            db[file_hash] = {
+                "filename": fname,
+                "transcript_preview": transcript[:100] if transcript else "",
+                "summary_preview": summary[:100] if summary else "No summary available",
+                "metadata": metadata
+            }
+            save_db(db)
+            print(f"✅ Done: {fname}")
+        except Exception as e:
+            print(f"❌ Error processing {fname}: {str(e)}")
 
 if __name__ == "__main__":
     main()

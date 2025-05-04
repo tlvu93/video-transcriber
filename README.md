@@ -36,11 +36,31 @@ You also need to have ffmpeg installed on your system and a self-hosted LLM serv
 ### Standard Usage
 
 1. Place your video files in the `data/videos` directory
-2. Run the watcher script:
+2. Run the application using one of the provided scripts:
 
-```
-python src/watcher.py
-```
+   **On Windows:**
+
+   ```
+   run.bat
+   ```
+
+   **On Linux/macOS:**
+
+   ```
+   ./run.sh
+   ```
+
+   Or manually activate the virtual environment and run:
+
+   ```
+   # Windows
+   .venv\Scripts\activate
+   python src\watcher.py
+
+   # Linux/macOS
+   source .venv/bin/activate
+   python src/watcher.py
+   ```
 
 3. The script will automatically process any existing videos and then watch for new or modified videos
 4. Transcriptions will be saved in the `data/transcriptions` directory
@@ -56,15 +76,21 @@ You can also run the application using Docker Compose:
 docker-compose up -d
 ```
 
-2. Place your video files in the `data/videos` directory
-3. The application will automatically process the videos
-4. To view logs:
+2. Pull the DeepSeek model for Ollama:
+
+```
+docker-compose exec ollama ollama pull deepseek
+```
+
+3. Place your video files in the `data/videos` directory
+4. The application will automatically process the videos
+5. To view logs:
 
 ```
 docker-compose logs -f
 ```
 
-5. To stop the containers:
+6. To stop the containers:
 
 ```
 docker-compose down

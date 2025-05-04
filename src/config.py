@@ -7,4 +7,4 @@ DB_PATH = "data/db/processed_files.json"
 
 # Self-hosted LLM settings
 LLM_HOST = os.environ.get("LLM_HOST", "http://localhost:11434/api/generate")  # URL of the self-hosted LLM API
-LLM_MODEL = os.environ.get("LLM_MODEL", "llama3")  # Model name to use for summarization
+LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-r1")  # Model name to use for summarization
