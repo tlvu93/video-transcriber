@@ -2,4 +2,6 @@ watchdog
 openai-whisper
 ffmpeg-python
 rich
-requests 
+requests
+langchain
+langchain-community

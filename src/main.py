@@ -23,11 +23,12 @@ def main():
             continue
         
         print(f"📥 New file found: {fname}")
-        transcript, metadata = process_video(path)
+        transcript, metadata, summary = process_video(path)
         
         db[file_hash] = {
             "filename": fname,
             "transcript_preview": transcript[:100],
+            "summary_preview": summary[:100] if summary else "No summary available",
             "metadata": metadata
         }
         save_db(db)

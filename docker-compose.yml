@@ -1,0 +1,26 @@
+version: "3"
+
+services:
+  video-transcriber:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    depends_on:
+      - ollama
+    environment:
+      - LLM_HOST=http://ollama:11434/api/generate
+      - LLM_MODEL=deepseek
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ./ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    command: >
+      sh -c "ollama pull deepseek && ollama serve"
+    restart: unless-stopped

@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import TRANSCRIPT_DIR, VIDEO_DIR
 from utils import get_video_metadata
+from summarizer import create_summary
 
 model = whisper.load_model("base")
 
@@ -23,7 +24,8 @@ def process_video(filepath):
     basename = os.path.splitext(os.path.basename(filepath))[0]
     
     # Save transcript
-    with open(os.path.join(TRANSCRIPT_DIR, f"{basename}.txt"), "w") as f:
+    transcript_path = os.path.join(TRANSCRIPT_DIR, f"{basename}.txt")
+    with open(transcript_path, "w") as f:
         f.write(result["text"])
 
     # Save .srt if segments are available
@@ -33,8 +35,11 @@ def process_video(filepath):
                 f.write(f"{i+1}\n")
                 f.write(f"{format_srt_timestamp(seg['start'])} --> {format_srt_timestamp(seg['end'])}\n")
                 f.write(f"{seg['text'].strip()}\n\n")
+    
+    # Generate summary from transcript
+    summary = create_summary(result["text"], filepath)
 
-    return result["text"], metadata
+    return result["text"], metadata, summary
 
 def format_srt_timestamp(seconds):
     h = int(seconds // 3600)
