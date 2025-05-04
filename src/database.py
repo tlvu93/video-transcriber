@@ -1,7 +1,12 @@
 import json
 import os
+import sys
+from pathlib import Path
 
-from src.config import DB_PATH
+# Add src directory to Python path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from config import DB_PATH
 
 def load_db():
     if os.path.exists(DB_PATH):
