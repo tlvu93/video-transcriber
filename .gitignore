@@ -1,6 +1,5 @@
 __pycache__/
 *.pyc
 .venv/
-data/db/
-data/transcriptions/
-data/videos/
+data
+ollama-data
