@@ -43,7 +43,7 @@ class OllamaLLM(LLM):
             data["stop"] = stop
         
         try:
-            response = requests.post(self.api_url, headers=headers, json=data, timeout=300)  # Increased timeout to 2 minutes
+            response = requests.post(self.api_url, headers=headers, json=data, timeout=900)  # Increased timeout to 2 minutes
             response.raise_for_status()
             result = response.json().get("response", "")
             
