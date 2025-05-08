@@ -2,6 +2,8 @@ import os
 import sys
 import json
 import requests
+import logging
+import traceback
 from pathlib import Path
 from typing import Any, List, Mapping, Optional
 from langchain_core.language_models.llms import LLM
@@ -13,8 +15,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import TRANSCRIPT_DIR, SUMMARY_DIR, LLM_HOST, LLM_MODEL
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('summarizer')
+
 # Ensure summary directory exists
 os.makedirs(SUMMARY_DIR, exist_ok=True)
+logger.info(f"Summary directory: {SUMMARY_DIR}")
+logger.info(f"Using LLM at: {LLM_HOST}")
+logger.info(f"Using model: {LLM_MODEL}")
 
 class OllamaLLM(LLM):
     """LLM wrapper for Ollama API."""
@@ -42,8 +54,21 @@ class OllamaLLM(LLM):
         if stop:
             data["stop"] = stop
         
+        logger.info(f"Sending request to Ollama API at {self.api_url}")
+        logger.debug(f"Request data: {data}")
+        
         try:
-            response = requests.post(self.api_url, headers=headers, json=data, timeout=900)  # Increased timeout to 2 minutes
+            # Test connectivity to the Ollama API
+            try:
+                logger.info("Testing connection to Ollama API...")
+                conn_test = requests.get(self.api_url.replace("/api/generate", ""), timeout=5)
+                logger.info(f"Connection test status: {conn_test.status_code}")
+            except Exception as e:
+                logger.error(f"Connection test failed: {str(e)}")
+            
+            response = requests.post(self.api_url, headers=headers, json=data, timeout=900)
+            logger.info(f"Ollama API response status: {response.status_code}")
+            
             response.raise_for_status()
             result = response.json().get("response", "")
             
@@ -52,24 +77,33 @@ class OllamaLLM(LLM):
             result = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL)
             result = result.strip()
             
+            logger.info(f"Successfully received response from Ollama API (length: {len(result)})")
             return result
-        except requests.exceptions.ConnectionError:
-            print(f"Error calling Ollama API: Connection refused. Is Ollama running at {self.api_url}?")
+        except requests.exceptions.ConnectionError as e:
+            error_msg = f"Error calling Ollama API: Connection refused. Is Ollama running at {self.api_url}?"
+            logger.error(error_msg)
+            logger.error(f"Connection error details: {str(e)}")
             raise
-        except requests.exceptions.Timeout:
-            print(f"Error calling Ollama API: Request timed out after 120 seconds")
+        except requests.exceptions.Timeout as e:
+            error_msg = f"Error calling Ollama API: Request timed out after 900 seconds"
+            logger.error(error_msg)
+            logger.error(f"Timeout error details: {str(e)}")
             raise
         except requests.exceptions.HTTPError as e:
-            print(f"Error calling Ollama API: {e}")
+            error_msg = f"Error calling Ollama API: {e}"
+            logger.error(error_msg)
             if e.response.status_code == 404:
-                print(f"The model '{self.model_name}' may not be available. Try running: ollama pull {self.model_name}")
+                logger.error(f"The model '{self.model_name}' may not be available. Try running: ollama pull {self.model_name}")
             raise
         except Exception as e:
-            print(f"Error calling Ollama API: {e}")
+            error_msg = f"Error calling Ollama API: {e}"
+            logger.error(error_msg)
+            logger.error(f"Exception traceback: {traceback.format_exc()}")
             raise
 
 def get_llm():
     """Initialize and return the LLM client."""
+    logger.info("Initializing LLM client...")
     try:
         llm = OllamaLLM(
             model_name=LLM_MODEL,
@@ -77,9 +111,11 @@ def get_llm():
             temperature=0.1,
             max_tokens=512
         )
+        logger.info("LLM client initialized successfully")
         return llm
     except Exception as e:
-        print(f"Error initializing LLM: {e}")
+        logger.error(f"Error initializing LLM: {e}")
+        logger.error(f"Exception traceback: {traceback.format_exc()}")
         return None
 
 def create_summary(transcript_text, video_path):
@@ -93,55 +129,78 @@ def create_summary(transcript_text, video_path):
     Returns:
         str: The generated summary
     """
-    print(f"🤖 Generating summary for: {os.path.basename(video_path)}")
+    basename = os.path.basename(video_path)
+    logger.info(f"🤖 Generating summary for: {basename}")
+    logger.info(f"Transcript length: {len(transcript_text)} characters")
     
     try:
+        logger.info("Getting LLM client...")
         llm = get_llm()
         if not llm:
+            logger.warning("Failed to initialize LLM, using fallback summary")
             return generate_fallback_summary(transcript_text)
         
         # Create a document from the transcript
+        logger.info("Creating document from transcript")
         doc = Document(page_content=transcript_text)
         
         try:
             # Use LangChain's summarization chain
+            logger.info("Creating summarization chain")
             chain = load_summarize_chain(llm, chain_type="map_reduce")
+            
+            logger.info("Invoking summarization chain")
             # Updated to use invoke() instead of run() to address deprecation warning
             result = chain.invoke([doc])
+            logger.info(f"Summarization chain result type: {type(result)}")
             
             # Extract the summary text from the result dictionary
             if isinstance(result, dict):
+                logger.info(f"Result keys: {result.keys()}")
                 # Try common keys used by LangChain for the output
                 for key in ["output_text", "text", "summary"]:
                     if key in result:
                         summary = result[key]
+                        logger.info(f"Found summary in key: {key}")
                         break
                 else:
                     # If none of the expected keys are found, convert the whole dict to a string
+                    logger.warning("No expected keys found in result, using string representation")
                     summary = str(result)
             else:
                 # If the result is not a dict, convert it to a string
+                logger.info("Result is not a dictionary, using string representation")
                 summary = str(result)
+                
+            logger.info(f"Summary length: {len(summary)} characters")
         except requests.exceptions.ConnectionError as e:
-            print(f"⚠️ Ollama API connection error: {e}")
+            logger.error(f"⚠️ Ollama API connection error: {e}")
+            logger.error(f"Connection error details: {traceback.format_exc()}")
             return generate_fallback_summary(transcript_text)
         except Exception as e:
-            print(f"⚠️ Error using LLM for summarization: {e}")
+            logger.error(f"⚠️ Error using LLM for summarization: {e}")
+            logger.error(f"Exception traceback: {traceback.format_exc()}")
             return generate_fallback_summary(transcript_text)
         
         # Save the summary to a file
         basename = os.path.splitext(os.path.basename(video_path))[0]
         summary_path = os.path.join(SUMMARY_DIR, f"{basename}_summary.txt")
+        logger.info(f"Saving summary to: {summary_path}")
         
-        with open(summary_path, "w") as f:
-            f.write(summary)
+        try:
+            with open(summary_path, "w") as f:
+                f.write(summary)
+            logger.info(f"✅ Summary saved to: {summary_path}")
+        except Exception as e:
+            logger.error(f"Error saving summary file: {e}")
+            logger.error(f"Exception traceback: {traceback.format_exc()}")
         
-        print(f"✅ Summary saved to: {summary_path}")
         return summary
     
     except Exception as e:
         error_msg = f"Error generating summary: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.error(f"❌ {error_msg}")
+        logger.error(f"Exception traceback: {traceback.format_exc()}")
         return error_msg
 
 def generate_fallback_summary(transcript_text):
@@ -154,7 +213,7 @@ def generate_fallback_summary(transcript_text):
     Returns:
         str: A basic summary of the transcript
     """
-    print("⚠️ Using fallback summary generation method")
+    logger.warning("⚠️ Using fallback summary generation method")
     
     # Extract the first few sentences (up to 500 characters)
     preview = transcript_text[:500].strip()
@@ -175,6 +234,7 @@ Statistics:
 Note: This is a basic summary generated because the LLM service (Ollama) was not available. 
 To generate a full AI summary, please ensure Ollama is running at {LLM_HOST} with the model '{LLM_MODEL}'.
 """
+    logger.info("Generated fallback summary")
     return summary
 
 def summarize_from_file(transcript_path, video_path):
@@ -188,13 +248,16 @@ def summarize_from_file(transcript_path, video_path):
     Returns:
         str: The generated summary
     """
+    logger.info(f"Summarizing from file: {transcript_path}")
     try:
         with open(transcript_path, "r") as f:
             transcript_text = f.read()
         
+        logger.info(f"Read transcript file successfully, length: {len(transcript_text)} characters")
         return create_summary(transcript_text, video_path)
     
     except Exception as e:
         error_msg = f"Error reading transcript file: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.error(f"❌ {error_msg}")
+        logger.error(f"Exception traceback: {traceback.format_exc()}")
         return error_msg
