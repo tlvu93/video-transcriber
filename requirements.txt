@@ -5,3 +5,4 @@ rich
 requests
 langchain
 langchain-community
+transformers
