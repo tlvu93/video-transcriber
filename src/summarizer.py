@@ -9,6 +9,7 @@ from typing import Any, List, Mapping, Optional
 from langchain_core.language_models.llms import LLM
 from langchain.chains.summarize import load_summarize_chain
 from langchain_core.documents import Document
+from langchain_core.prompts import PromptTemplate
 
 # Add src directory to Python path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -145,9 +146,53 @@ def create_summary(transcript_text, video_path):
         doc = Document(page_content=transcript_text)
         
         try:
-            # Use LangChain's summarization chain
-            logger.info("Creating summarization chain")
-            chain = load_summarize_chain(llm, chain_type="map_reduce")
+            # Define custom prompt for meeting minutes summarization
+            logger.info("Creating custom meeting minutes prompt")
+            meeting_minutes_prompt = PromptTemplate.from_template(
+                """You are an expert meeting-minute writer.
+
+TASK  
+Summarise the transcript that follows the line ---.
+
+OBJECTIVES  
+• Detect the meeting's main topic(s) and label them (even if not explicit).  
+• Identify participants and replace pronouns with names where obvious.  
+• Capture only information that matters:  
+   – decisions made  
+   – action items (owner · task · due date if mentioned)  
+   – blockers / issues / risks  
+   – open questions  
+   – key data points (numbers, URLs, ticket IDs, etc.)  
+• Discard all filler (greetings, "can you see my screen", navigation clicks, jokes, repeated yes/no, etc.).
+
+OUTPUT FORMAT (Markdown)  
+1. **One-Sentence Overview** – ≤ 30 words.  
+2. **Participants** – bullet list *Name (role/affiliation if clear)*.  
+3. **Key Topics Discussed** – bullets, ≤ 12 words each.  
+4. **Decisions** – bullets beginning with **✓**.  
+5. **Action Items** – bullets beginning with **→ Owner – Task – Due/When**.  
+6. **Open Questions / Risks** – bullets beginning with **?**.  
+7. **Next Check-point** – "No date mentioned" or the first future date heard.
+
+CONSTRAINTS  
+• Maximum 120 words per section.  
+• If something is ambiguous, note it with "[unclear]".  
+• If a required element is completely missing, output "None stated".  
+• Before finalising, reread your draft and trim any stray filler or duplicate points.
+
+---
+
+{text}
+"""
+            )
+            
+            # Use LangChain's summarization chain with custom prompt
+            logger.info("Creating summarization chain with custom prompt")
+            chain = load_summarize_chain(
+                llm, 
+                chain_type="stuff",  # Using "stuff" chain type for single prompt processing
+                prompt=meeting_minutes_prompt
+            )
             
             logger.info("Invoking summarization chain")
             # Updated to use invoke() instead of run() to address deprecation warning
