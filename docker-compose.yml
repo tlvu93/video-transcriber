@@ -1,7 +1,29 @@
 version: "3"
 
 services:
-  video-transcriber:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: videotranscriber
+      POSTGRES_PASSWORD: videotranscriber
+      POSTGRES_DB: videotranscriber
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U videotranscriber"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
     build:
       context: .
       dockerfile: Dockerfile
@@ -9,12 +31,66 @@ services:
       - ./data:/app/data
       - ./src:/app/src
     depends_on:
+      postgres:
+        condition: service_healthy
       ollama:
         condition: service_healthy
     environment:
+      - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
       - LLM_HOST=http://ollama:11434/api/generate
       - LLM_MODEL=deepseek-r1
-      - PYTHONUNBUFFERED=1 # Ensure Python output is not buffered
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8000:8000"
+    command: ["python", "src/api.py"]
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  transcription-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
+      - WORKER_TYPE=transcription
+      - PYTHONUNBUFFERED=1
+    command: ["python", "src/worker.py", "transcription"]
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  summarization-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
+      - LLM_HOST=http://ollama:11434/api/generate
+      - LLM_MODEL=deepseek-r1
+      - WORKER_TYPE=summarization
+      - PYTHONUNBUFFERED=1
+    command: ["python", "src/worker.py", "summarization"]
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -42,3 +118,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  postgres-data:
