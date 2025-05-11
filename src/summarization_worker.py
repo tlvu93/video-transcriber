@@ -6,10 +6,16 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 from typing import Optional
 
-from .database import get_db
-from .models import Transcript, Summary, SummarizationJob, Video
-from .job_queue import get_next_summarization_job, mark_job_started, mark_job_completed, mark_job_failed
-from .summarizer import create_summary
+import sys
+from pathlib import Path
+
+# Add the parent directory to the Python path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from database import get_db
+from models import Transcript, Summary, SummarizationJob, Video
+from job_queue import get_next_summarization_job, mark_job_started, mark_job_completed, mark_job_failed
+from summarizer import create_summary
 
 # Configure logging
 logging.basicConfig(

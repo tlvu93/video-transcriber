@@ -5,7 +5,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 
-from .models import Base
+from src.models import Base
 
 # Configure logging
 logging.basicConfig(
@@ -52,10 +52,10 @@ def get_db():
 
 def migrate_from_json_to_db():
     """Migrate data from the JSON file to the database."""
-    from .config import DB_PATH
+    from src.config import DB_PATH
     import json
     import os
-    from .models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob
+    from src.models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob
     
     if not os.path.exists(DB_PATH):
         logger.warning(f"JSON database file not found: {DB_PATH}")
@@ -85,7 +85,7 @@ def migrate_from_json_to_db():
                     file_hash=file_hash,
                     filename=data["filename"],
                     status="completed",
-                    metadata=data.get("metadata", {}),
+                    video_metadata=data.get("metadata", {}),  # Updated to use the renamed column
                 )
                 
                 # Extract additional metadata if available

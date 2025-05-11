@@ -44,7 +44,7 @@ class SummaryCreate(SummaryBase):
 # Update schemas
 class VideoUpdate(BaseModel):
     status: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    video_metadata: Optional[Dict[str, Any]] = None  # Renamed from 'metadata'
     language: Optional[str] = None
 
 class TranscriptUpdate(BaseModel):
@@ -96,7 +96,7 @@ class VideoResponse(VideoBase):
     file_hash: str
     created_at: datetime
     updated_at: datetime
-    metadata: Optional[Dict[str, Any]] = None
+    video_metadata: Optional[Dict[str, Any]] = None  # Renamed from 'metadata'
     transcription_jobs: List[TranscriptionJobResponse] = []
 
     class Config:

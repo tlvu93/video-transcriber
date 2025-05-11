@@ -16,7 +16,7 @@ class Video(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     status = Column(String, default="pending")
-    metadata = Column(JSONB)
+    video_metadata = Column(JSONB)  # Renamed from 'metadata' which is a reserved name in SQLAlchemy
     duration_seconds = Column(Float)
     language = Column(String)
     file_type = Column(String)

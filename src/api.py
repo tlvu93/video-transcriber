@@ -1,22 +1,27 @@
 import os
+import sys
 import logging
 import uuid
 import shutil
+from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timedelta
 
-from .database import get_db_session, init_db, migrate_from_json_to_db
-from .models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob
-from .schemas import (
+# Add the project root directory to the Python path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.database import get_db_session, init_db, migrate_from_json_to_db
+from src.models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob
+from src.schemas import (
     VideoResponse, VideoDetailResponse, TranscriptResponse, SummaryResponse,
     TranscriptionJobResponse, SummarizationJobResponse, TranscriptCreate,
     AnalyticsOverview, TranscriptionStats, SummarizationStats, AnalyticsTrends
 )
-from .job_queue import create_transcription_job, create_summarization_job
-from .utils import get_file_hash, get_video_metadata
+from src.job_queue import create_transcription_job, create_summarization_job
+from src.utils import get_file_hash, get_video_metadata
 
 # Configure logging
 logging.basicConfig(
@@ -102,7 +107,7 @@ async def upload_video(
             filename=file.filename,
             file_hash=file_hash,
             status="pending",
-            metadata=metadata,
+            video_metadata=metadata,  # Updated to use the renamed column
             duration_seconds=duration_seconds,
             file_type=file_type,
             resolution_width=resolution_width,

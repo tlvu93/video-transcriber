@@ -10,8 +10,8 @@ from watchdog.events import FileSystemEventHandler
 # Add src directory to Python path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, DB_PATH
-from main import main
+from src.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, DB_PATH
+from src.main import main
 
 # Configure logging
 logging.basicConfig(

@@ -14,7 +14,7 @@ from langchain_core.prompts import PromptTemplate
 # Add src directory to Python path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import TRANSCRIPT_DIR, SUMMARY_DIR, LLM_HOST, LLM_MODEL
+from src.config import TRANSCRIPT_DIR, SUMMARY_DIR, LLM_HOST, LLM_MODEL
 
 # Configure logging
 logging.basicConfig(

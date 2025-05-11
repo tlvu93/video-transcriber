@@ -8,9 +8,9 @@ from pathlib import Path
 # Add src directory to Python path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import TRANSCRIPT_DIR, VIDEO_DIR
-from utils import get_video_metadata
-from summarizer import create_summary
+from src.config import TRANSCRIPT_DIR, VIDEO_DIR
+from src.utils import get_video_metadata
+from src.summarizer import create_summary
 
 # Configure logging
 logging.basicConfig(

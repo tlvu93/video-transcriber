@@ -1,10 +1,15 @@
 import sys
 import logging
 import argparse
+import os
+from pathlib import Path
 
-from .database import init_db
-from .transcription_worker import start_worker as start_transcription_worker
-from .summarization_worker import start_worker as start_summarization_worker
+# Add the project root directory to the Python path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.database import init_db
+from src.transcription_worker import start_worker as start_transcription_worker
+from src.summarization_worker import start_worker as start_summarization_worker
 
 # Configure logging
 logging.basicConfig(
