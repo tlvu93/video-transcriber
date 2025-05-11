@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import Depends, HTTPException, status
@@ -45,6 +46,9 @@ class UserResponse(UserBase):
 
     class Config:
         orm_mode = True
+        json_encoders = {
+            uuid.UUID: lambda v: str(v)
+        }
 
 # Password functions
 def verify_password(plain_password, hashed_password):

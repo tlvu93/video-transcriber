@@ -75,6 +75,10 @@ docker-compose run --rm -e SKIP_DB_INIT=true api alembic upgrade head
 
 echo "Migrations completed."
 
+# Ensure pgcrypto extension is installed
+echo "Installing pgcrypto extension..."
+docker-compose exec -T postgres psql -U videotranscriber -d videotranscriber -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+
 # Restart services with the SKIP_DB_INIT environment variable
 echo "Restarting services with SKIP_DB_INIT=true..."
 docker-compose up -d

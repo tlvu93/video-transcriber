@@ -89,14 +89,18 @@ if [[ "$FORCE" != "true" ]]; then
     fi
 fi
 
-# Hash the password (using PostgreSQL's crypt function)
+# Create admin user with UUID and password hash directly in SQL
 echo "Creating admin user..."
-HASHED_PASSWORD=$(docker-compose exec -T postgres psql -U videotranscriber -d videotranscriber -t -c "SELECT crypt('$PASSWORD', gen_salt('bf'));" | tr -d '[:space:]')
-
-# Insert the admin user
 if docker-compose exec -T postgres psql -U videotranscriber -d videotranscriber -c "
-INSERT INTO users (username, password_hash, role, created_at, updated_at)
-VALUES ('$USERNAME', '$HASHED_PASSWORD', 'admin', NOW(), NOW());
+INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+VALUES (
+  gen_random_uuid(),
+  '$USERNAME', 
+  crypt('$PASSWORD', gen_salt('bf')), 
+  'admin', 
+  NOW(), 
+  NOW()
+);
 "; then
     echo "✅ Admin user '$USERNAME' created successfully"
 else

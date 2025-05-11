@@ -106,11 +106,24 @@ async def create_user(
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    return db_user
+    
+    # Convert UUID to string explicitly
+    return {
+        "username": db_user.username,
+        "id": str(db_user.id),
+        "role": db_user.role,
+        "created_at": db_user.created_at
+    }
 
 @app.get("/api/users/me", response_model=UserResponse)
 async def read_users_me(current_user = Depends(get_current_active_user)):
-    return current_user
+    # Convert UUID to string explicitly
+    return {
+        "username": current_user.username,
+        "id": str(current_user.id),
+        "role": current_user.role,
+        "created_at": current_user.created_at
+    }
 
 # Video endpoints
 @app.post("/api/videos", response_model=VideoResponse)

@@ -20,7 +20,7 @@ def upgrade():
     # Create users table
     op.create_table(
         'users',
-        sa.Column('id', UUID(as_uuid=True), primary_key=True),
+        sa.Column('id', UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column('username', sa.String(), nullable=False, unique=True),
         sa.Column('password_hash', sa.String(), nullable=False),
         sa.Column('role', sa.String(), nullable=True),
