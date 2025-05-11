@@ -2,6 +2,29 @@
 
 A modular system for transcribing videos and generating summaries with analytics tracking.
 
+## Known Issues and Fixes
+
+### Database Initialization Issue
+
+There is a known issue with the initialization script (`init.sh`) where the "videos" table is created twice, resulting in a "DuplicateTable" error. This happens because:
+
+1. The Alembic migration creates the tables
+2. The application's `init_db()` function also tries to create the tables
+
+To fix this issue, we've provided a fix_database.sh script that:
+
+1. Sets the SKIP_DB_INIT environment variable to prevent duplicate table creation
+2. Runs the migrations properly to create all tables
+3. Restarts the services with the correct configuration
+
+To apply the fix, run:
+
+```bash
+./fix_database.sh
+```
+
+For new installations, the updated `init.sh` script already includes this fix.
+
 ## Architecture
 
 The Video Transcriber is built with a modular architecture that separates the transcription and summarization processes:

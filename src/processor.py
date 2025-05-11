@@ -5,8 +5,8 @@ import logging
 import traceback
 from pathlib import Path
 
-# Add src directory to Python path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add the project root directory to the Python path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import TRANSCRIPT_DIR, VIDEO_DIR
 from src.utils import get_video_metadata

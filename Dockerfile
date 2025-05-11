@@ -1,10 +1,13 @@
 FROM python:3.10-slim
 
-# Install system dependencies including ffmpeg
+# Install system dependencies including ffmpeg and PostgreSQL development packages
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
     curl \
+    postgresql-client \
+    libpq-dev \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

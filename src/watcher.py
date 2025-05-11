@@ -7,8 +7,8 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Add src directory to Python path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add the project root directory to the Python path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, DB_PATH
 from src.main import main

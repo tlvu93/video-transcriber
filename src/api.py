@@ -4,8 +4,9 @@ import logging
 import uuid
 import shutil
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query, Form
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query, Form, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database import get_db_session, init_db, migrate_from_json_to_db
-from src.models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob
+from src.models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob, User
 from src.schemas import (
     VideoResponse, VideoDetailResponse, TranscriptResponse, SummaryResponse,
     TranscriptionJobResponse, SummarizationJobResponse, TranscriptCreate,
@@ -22,6 +23,10 @@ from src.schemas import (
 )
 from src.job_queue import create_transcription_job, create_summarization_job
 from src.utils import get_file_hash, get_video_metadata
+from src.auth import (
+    Token, UserCreate, UserResponse, authenticate_user, create_access_token,
+    get_password_hash, get_current_active_user, get_admin_user
+)
 
 # Configure logging
 logging.basicConfig(
@@ -61,11 +66,58 @@ async def startup_event():
     logger.info("Migrating data from JSON to database...")
     migrate_from_json_to_db()
 
+# Authentication endpoints
+@app.post("/api/auth/token", response_model=Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db_session)
+):
+    user = authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=30)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/api/users", response_model=UserResponse)
+async def create_user(
+    user: UserCreate,
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_admin_user)
+):
+    # Check if username already exists
+    db_user = db.query(User).filter(User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    
+    # Create new user
+    hashed_password = get_password_hash(user.password)
+    db_user = User(
+        username=user.username,
+        password_hash=hashed_password,
+        role=user.role
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@app.get("/api/users/me", response_model=UserResponse)
+async def read_users_me(current_user = Depends(get_current_active_user)):
+    return current_user
+
 # Video endpoints
 @app.post("/api/videos", response_model=VideoResponse)
 async def upload_video(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Upload a new video file."""
     try:
@@ -131,7 +183,8 @@ def get_videos(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = None,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get a list of videos."""
     query = db.query(Video)
@@ -145,7 +198,8 @@ def get_videos(
 @app.get("/api/videos/{video_id}", response_model=VideoDetailResponse)
 def get_video(
     video_id: uuid.UUID,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get details of a specific video."""
     video = db.query(Video).filter(Video.id == video_id).first()
@@ -156,7 +210,8 @@ def get_video(
 @app.delete("/api/videos/{video_id}")
 def delete_video(
     video_id: uuid.UUID,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Delete a video and its associated data."""
     video = db.query(Video).filter(Video.id == video_id).first()
@@ -192,7 +247,8 @@ def delete_video(
 @app.put("/api/videos/{video_id}/reprocess")
 def reprocess_video(
     video_id: uuid.UUID,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Reprocess a video (create new transcription job)."""
     video = db.query(Video).filter(Video.id == video_id).first()
@@ -214,7 +270,8 @@ def get_transcripts(
     skip: int = 0,
     limit: int = 100,
     source_type: Optional[str] = None,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get a list of transcripts."""
     query = db.query(Transcript)
@@ -228,7 +285,8 @@ def get_transcripts(
 @app.get("/api/transcripts/{transcript_id}", response_model=TranscriptResponse)
 def get_transcript(
     transcript_id: uuid.UUID,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get details of a specific transcript."""
     transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
@@ -239,7 +297,8 @@ def get_transcript(
 @app.post("/api/transcripts", response_model=TranscriptResponse)
 def create_transcript(
     transcript: TranscriptCreate,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Create a new manual transcript."""
     # Create transcript record
@@ -262,7 +321,8 @@ def create_transcript(
 @app.put("/api/transcripts/{transcript_id}/summarize")
 def summarize_transcript(
     transcript_id: uuid.UUID,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Create a summarization job for a transcript."""
     transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
@@ -279,7 +339,8 @@ def summarize_transcript(
 def get_summaries(
     skip: int = 0,
     limit: int = 100,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get a list of summaries."""
     summaries = db.query(Summary).order_by(Summary.created_at.desc()).offset(skip).limit(limit).all()
@@ -288,7 +349,8 @@ def get_summaries(
 @app.get("/api/summaries/{summary_id}", response_model=SummaryResponse)
 def get_summary(
     summary_id: uuid.UUID,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get details of a specific summary."""
     summary = db.query(Summary).filter(Summary.id == summary_id).first()
@@ -302,7 +364,8 @@ def get_transcription_jobs(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = None,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get a list of transcription jobs."""
     query = db.query(TranscriptionJob)
@@ -318,7 +381,8 @@ def get_summarization_jobs(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = None,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get a list of summarization jobs."""
     query = db.query(SummarizationJob)
@@ -332,7 +396,8 @@ def get_summarization_jobs(
 # Analytics endpoints
 @app.get("/api/analytics/overview", response_model=AnalyticsOverview)
 def get_analytics_overview(
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get overview analytics."""
     # Count videos
@@ -363,7 +428,8 @@ def get_analytics_overview(
 
 @app.get("/api/analytics/transcription", response_model=TranscriptionStats)
 def get_transcription_stats(
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get transcription analytics."""
     # Count transcriptions
@@ -419,7 +485,8 @@ def get_transcription_stats(
 
 @app.get("/api/analytics/summarization", response_model=SummarizationStats)
 def get_summarization_stats(
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get summarization analytics."""
     # Count summarizations
@@ -445,7 +512,8 @@ def get_summarization_stats(
 @app.get("/api/analytics/trends", response_model=AnalyticsTrends)
 def get_analytics_trends(
     days: int = 7,
-    db: Session = Depends(get_db_session)
+    db: Session = Depends(get_db_session),
+    current_user = Depends(get_current_active_user)
 ):
     """Get processing trends over time."""
     trends = []

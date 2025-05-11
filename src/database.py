@@ -25,6 +25,11 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
     """Initialize the database by creating all tables."""
+    # Check if we should skip database initialization
+    if os.environ.get("SKIP_DB_INIT", "false").lower() == "true":
+        logger.info("Skipping database table creation (SKIP_DB_INIT=true)")
+        return
+        
     try:
         logger.info("Creating database tables...")
         Base.metadata.create_all(bind=engine)

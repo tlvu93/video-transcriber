@@ -85,9 +85,13 @@ echo "Building and starting services..."
 echo "Waiting for services to start..."
 sleep 10
 
-# Run database migrations
+# Run database migrations (this will create all tables including videos)
 echo "Running database migrations..."
 ./run_migrations_docker.sh
+
+# Skip the automatic table creation in the API service
+echo "Setting environment variable to skip table creation..."
+export SKIP_DB_INIT=true
 
 # Create admin user
 echo "Creating admin user..."

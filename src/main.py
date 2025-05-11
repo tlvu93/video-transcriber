@@ -4,13 +4,13 @@ import logging
 import threading
 from pathlib import Path
 
-# Add src directory to Python path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add the project root directory to the Python path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from database import init_db, migrate_from_json_to_db
-from transcription_worker import start_worker as start_transcription_worker
-from summarization_worker import start_worker as start_summarization_worker
-from api import app as api_app
+from src.database import init_db, migrate_from_json_to_db
+from src.transcription_worker import start_worker as start_transcription_worker
+from src.summarization_worker import start_worker as start_summarization_worker
+from src.api import app as api_app
 import uvicorn
 
 # Configure logging
