@@ -24,10 +24,11 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: api-service/Dockerfile
     volumes:
       - ./data:/app/data
-      - ./src:/app/src
+      - ./common:/app/common
+      - ./api-service:/app/api-service
     depends_on:
       postgres:
         condition: service_healthy
@@ -41,7 +42,8 @@ services:
       - SKIP_DB_INIT=${SKIP_DB_INIT:-false}
     ports:
       - "8000:8000"
-    command: ["python", "src/api.py"]
+    command: ["python", "-m", "api.main"]
+    working_dir: /app/api-service
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -52,18 +54,19 @@ services:
   transcription-worker:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: transcription-service/Dockerfile
     volumes:
       - ./data:/app/data
-      - ./src:/app/src
+      - ./common:/app/common
+      - ./transcription-service:/app/transcription-service
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
-      - WORKER_TYPE=transcription
       - PYTHONUNBUFFERED=1
-    command: ["python", "src/worker.py", "transcription"]
+    command: ["python", "-m", "transcription.main"]
+    working_dir: /app/transcription-service
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -74,10 +77,11 @@ services:
   summarization-worker:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: summarization-service/Dockerfile
     volumes:
       - ./data:/app/data
-      - ./src:/app/src
+      - ./common:/app/common
+      - ./summarization-service:/app/summarization-service
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,9 +91,9 @@ services:
       - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
       - LLM_HOST=http://ollama:11434/api/generate
       - LLM_MODEL=deepseek-r1
-      - WORKER_TYPE=summarization
       - PYTHONUNBUFFERED=1
-    command: ["python", "src/worker.py", "summarization"]
+    command: ["python", "-m", "summarization.main"]
+    working_dir: /app/summarization-service
     restart: unless-stopped
     logging:
       driver: "json-file"

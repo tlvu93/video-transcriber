@@ -7,8 +7,8 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from src.database import get_db_session
-from src.models import User
+from common.database import get_db_session
+from common.models import User
 from pydantic import BaseModel
 
 # Secret key for JWT
