@@ -1,136 +1,78 @@
 # Video Transcriber
 
-A microservice-based application for transcribing and summarizing videos.
+A service that transcribes videos, generates summaries, and provides an API for accessing the results.
 
 ## Project Structure
 
-The project is organized into several microservices:
+The project has been restructured into separate services:
 
-- **common**: Shared code and utilities used by all services
-- **api-service**: HTTP API for user interaction
-- **transcription-service**: Service for transcribing videos
-- **summarization-service**: Service for summarizing transcripts
-
-## Services
-
-### Common Package
-
-Contains shared code and utilities used by all services:
-
-- Database models and connection management
-- Authentication and authorization
-- Job queue management
-- Configuration settings
-- Utility functions
-
-### API Service
-
-Provides the HTTP API for the application:
-
-- User authentication and authorization
-- Video upload and management
-- Transcript and summary retrieval
-- Job status monitoring
-
-### Transcription Service
-
-Handles the transcription of video files:
-
-- Automatic speech recognition
-- Support for multiple video formats
-- Job queue integration
-
-### Summarization Service
-
-Handles the summarization of transcripts:
-
-- AI-powered summarization using Ollama
-- Custom prompt engineering
-- Job queue integration
-
-## Setup and Installation
-
-### Prerequisites
-
-- Docker and Docker Compose
-- PostgreSQL
-- FFmpeg
-- Python 3.9+
-
-### Installation
-
-1. Clone the repository:
-
-```bash
-git clone https://github.com/yourusername/video-transcriber.git
-cd video-transcriber
-```
-
-2. Install the common package:
-
-```bash
-cd common
-pip install -e .
-cd ..
-```
-
-3. Install each service:
-
-```bash
-cd api-service
-pip install -e .
-cd ../transcription-service
-pip install -e .
-cd ../summarization-service
-pip install -e .
-cd ..
-```
+- **api-service**: FastAPI-based API for accessing videos, transcripts, and summaries
+- **common**: Shared code used by all services (database, models, config, etc.)
+- **processor-service**: Processes videos to generate transcripts and summaries
+- **summarization-service**: Generates summaries from transcripts
+- **transcription-service**: Transcribes videos to text
+- **watcher-service**: Watches for new videos and triggers processing
 
 ## Running the Application
 
-### Using Docker Compose
+You can run different components of the application using the `run.py` script:
 
 ```bash
-./run_docker.sh
+# Run the API server
+./run.py api
+
+# Run the transcription worker
+./run.py transcription
+
+# Run the summarization worker
+./run.py summarization
+
+# Run the file watcher
+./run.py watcher
+
+# Process a specific video file
+./run.py processor --file path/to/video.mp4
 ```
 
-### Running Services Individually
+## Docker
 
-1. Start the API service:
-
-```bash
-cd api-service
-python -m api.main
-```
-
-2. Start the Transcription service:
+You can also run the application using Docker:
 
 ```bash
-cd transcription-service
-python -m transcription.main
-```
+# Build and run all services
+docker-compose up -d
 
-3. Start the Summarization service:
-
-```bash
-cd summarization-service
-python -m summarization.main
+# Stop all services
+docker-compose down
 ```
 
 ## Development
 
-### Database Migrations
+### Prerequisites
 
-```bash
-python run_migrations.py
-```
+- Python 3.8+
+- FFmpeg (for video processing)
+- Ollama (for summarization)
 
-### Running Tests
+### Setup
 
-```bash
-# TODO: Add test commands
-```
+1. Clone the repository
+2. Install dependencies: `pip install -r requirements.txt`
+3. Run the application: `./run.py api`
 
-## License
+### Environment Variables
 
-[MIT](LICENSE)
+- `LLM_HOST`: URL of the Ollama API (default: http://localhost:11434/api/generate)
+- `LLM_MODEL`: Name of the Ollama model to use (default: deepseek-r1)
+
+## API Endpoints
+
+- `GET /`: Root endpoint
+- `POST /videos/`: Upload a video for transcription
+- `GET /videos/`: List all videos
+- `GET /videos/{video_id}`: Get a video by ID
+- `GET /videos/{video_id}/download`: Download a video by ID
+- `GET /transcripts/`: List all transcripts
+- `GET /transcripts/{transcript_id}`: Get a transcript by ID
+- `GET /summaries/`: List all summaries
+- `GET /summaries/{summary_id}`: Get a summary by ID

@@ -1,32 +1,15 @@
 import os
-import sys
 import logging
-import uuid
 import shutil
-from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query, Form, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
 from typing import List, Optional
-from datetime import datetime, timedelta
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
 
-# Add the project root directory to the Python path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from src.database import get_db_session, init_db, migrate_from_json_to_db
-from src.models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob, User
-from src.schemas import (
-    VideoResponse, VideoDetailResponse, TranscriptResponse, SummaryResponse,
-    TranscriptionJobResponse, SummarizationJobResponse, TranscriptCreate,
-    AnalyticsOverview, TranscriptionStats, SummarizationStats, AnalyticsTrends
-)
-from src.job_queue import create_transcription_job, create_summarization_job
-from src.utils import get_file_hash, get_video_metadata
-from src.auth import (
-    Token, UserCreate, UserResponse, authenticate_user, create_access_token,
-    get_password_hash, get_current_active_user, get_admin_user
-)
+from common.common.database import get_db
+from common.common.models import Video, Transcript, Summary
+from common.common.job_queue import create_transcription_job
+from common.common.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR
 
 # Configure logging
 logging.basicConfig(
@@ -36,554 +19,181 @@ logging.basicConfig(
 logger = logging.getLogger('api')
 
 # Create FastAPI app
-app = FastAPI(
-    title="Video Transcriber API",
-    description="API for video transcription and summarization",
-    version="1.0.0"
-)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="Video Transcriber API")
 
 # Ensure directories exist
-os.makedirs("data/videos", exist_ok=True)
-os.makedirs("data/transcriptions", exist_ok=True)
-os.makedirs("data/summaries", exist_ok=True)
+os.makedirs(VIDEO_DIR, exist_ok=True)
+os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
+os.makedirs(SUMMARY_DIR, exist_ok=True)
 
-# Initialize database on startup
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Initializing database...")
-    init_db()
-    
-    # Migrate data from JSON to database
-    logger.info("Migrating data from JSON to database...")
-    migrate_from_json_to_db()
+@app.get("/")
+def read_root():
+    """Root endpoint."""
+    return {"message": "Video Transcriber API"}
 
-# Authentication endpoints
-@app.post("/api/auth/token", response_model=Token)
-async def login_for_access_token(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db_session)
-):
-    user = authenticate_user(db, form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token_expires = timedelta(minutes=30)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.post("/api/users", response_model=UserResponse)
-async def create_user(
-    user: UserCreate,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_admin_user)
-):
-    # Check if username already exists
-    db_user = db.query(User).filter(User.username == user.username).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    
-    # Create new user
-    hashed_password = get_password_hash(user.password)
-    db_user = User(
-        username=user.username,
-        password_hash=hashed_password,
-        role=user.role
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    
-    # Convert UUID to string explicitly
-    return {
-        "username": db_user.username,
-        "id": str(db_user.id),
-        "role": db_user.role,
-        "created_at": db_user.created_at
-    }
-
-@app.get("/api/users/me", response_model=UserResponse)
-async def read_users_me(current_user = Depends(get_current_active_user)):
-    # Convert UUID to string explicitly
-    return {
-        "username": current_user.username,
-        "id": str(current_user.id),
-        "role": current_user.role,
-        "created_at": current_user.created_at
-    }
-
-# Video endpoints
-@app.post("/api/videos", response_model=VideoResponse)
+@app.post("/videos/")
 async def upload_video(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
+    db: Session = Depends(get_db)
 ):
-    """Upload a new video file."""
+    """
+    Upload a video file for transcription.
+    
+    Args:
+        background_tasks: FastAPI background tasks
+        file: The video file to upload
+        db: Database session
+        
+    Returns:
+        The created video object
+    """
+    logger.info(f"Received video upload: {file.filename}")
+    
+    # Save the video file
+    file_path = os.path.join(VIDEO_DIR, file.filename)
     try:
-        # Save uploaded file
-        file_location = os.path.join("data/videos", file.filename)
-        with open(file_location, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-        
-        # Get file hash and metadata
-        file_hash = get_file_hash(file_location)
-        if not file_hash:
-            raise HTTPException(status_code=500, detail="Failed to calculate file hash")
-        
-        # Check if video already exists
-        existing_video = db.query(Video).filter(Video.file_hash == file_hash).first()
-        if existing_video:
-            return existing_video
-        
-        # Get video metadata
-        metadata = get_video_metadata(file_location)
-        
-        # Extract additional metadata
-        duration_seconds = None
-        resolution_width = None
-        resolution_height = None
-        file_type = os.path.splitext(file.filename)[1].lstrip('.')
-        
-        if "format" in metadata and "duration" in metadata["format"]:
-            duration_seconds = float(metadata["format"]["duration"])
-        
-        if "streams" in metadata and len(metadata["streams"]) > 0:
-            if "width" in metadata["streams"][0]:
-                resolution_width = metadata["streams"][0]["width"]
-            if "height" in metadata["streams"][0]:
-                resolution_height = metadata["streams"][0]["height"]
-        
-        # Create video record
-        video = Video(
-            filename=file.filename,
-            file_hash=file_hash,
-            status="pending",
-            video_metadata=metadata,  # Updated to use the renamed column
-            duration_seconds=duration_seconds,
-            file_type=file_type,
-            resolution_width=resolution_width,
-            resolution_height=resolution_height
-        )
-        db.add(video)
-        db.commit()
-        db.refresh(video)
-        
-        # Create transcription job
-        create_transcription_job(video.id, db)
-        
-        return video
-    
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
     except Exception as e:
-        logger.error(f"Error uploading video: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error saving video file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error saving video file: {str(e)}")
+    
+    # Create video record
+    video = Video(filename=file.filename)
+    db.add(video)
+    db.commit()
+    db.refresh(video)
+    
+    # Create transcription job
+    create_transcription_job(video.id, db)
+    
+    return {
+        "id": video.id,
+        "filename": video.filename,
+        "status": video.status,
+        "created_at": video.created_at
+    }
 
-@app.get("/api/videos", response_model=List[VideoResponse])
-def get_videos(
-    skip: int = 0,
-    limit: int = 100,
-    status: Optional[str] = None,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get a list of videos."""
-    query = db.query(Video)
+@app.get("/videos/")
+def list_videos(db: Session = Depends(get_db)):
+    """
+    List all videos.
     
-    if status:
-        query = query.filter(Video.status == status)
-    
-    videos = query.order_by(Video.created_at.desc()).offset(skip).limit(limit).all()
+    Args:
+        db: Database session
+        
+    Returns:
+        List of videos
+    """
+    videos = db.query(Video).all()
     return videos
 
-@app.get("/api/videos/{video_id}", response_model=VideoDetailResponse)
-def get_video(
-    video_id: uuid.UUID,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get details of a specific video."""
+@app.get("/videos/{video_id}")
+def get_video(video_id: str, db: Session = Depends(get_db)):
+    """
+    Get a video by ID.
+    
+    Args:
+        video_id: The ID of the video
+        db: Database session
+        
+    Returns:
+        The video object
+    """
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
     return video
 
-@app.delete("/api/videos/{video_id}")
-def delete_video(
-    video_id: uuid.UUID,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Delete a video and its associated data."""
-    video = db.query(Video).filter(Video.id == video_id).first()
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+@app.get("/videos/{video_id}/download")
+def download_video(video_id: str, db: Session = Depends(get_db)):
+    """
+    Download a video by ID.
     
-    # Delete file from disk
-    file_path = os.path.join("data/videos", video.filename)
-    if os.path.exists(file_path):
-        os.remove(file_path)
-    
-    # Delete associated transcripts and summaries
-    transcripts = db.query(Transcript).filter(Transcript.video_id == video_id).all()
-    for transcript in transcripts:
-        # Delete associated summaries
-        db.query(Summary).filter(Summary.transcript_id == transcript.id).delete()
+    Args:
+        video_id: The ID of the video
+        db: Database session
         
-        # Delete associated summarization jobs
-        db.query(SummarizationJob).filter(SummarizationJob.transcript_id == transcript.id).delete()
-    
-    # Delete transcripts
-    db.query(Transcript).filter(Transcript.video_id == video_id).delete()
-    
-    # Delete transcription jobs
-    db.query(TranscriptionJob).filter(TranscriptionJob.video_id == video_id).delete()
-    
-    # Delete video
-    db.delete(video)
-    db.commit()
-    
-    return {"message": "Video deleted successfully"}
-
-@app.put("/api/videos/{video_id}/reprocess")
-def reprocess_video(
-    video_id: uuid.UUID,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Reprocess a video (create new transcription job)."""
+    Returns:
+        The video file
+    """
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
     
-    # Update video status
-    video.status = "pending"
-    db.commit()
+    file_path = os.path.join(VIDEO_DIR, video.filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Video file not found")
     
-    # Create new transcription job
-    job = create_transcription_job(video.id, db)
-    
-    return {"message": "Video reprocessing started", "job_id": job.id}
+    return FileResponse(file_path, filename=video.filename)
 
-# Transcript endpoints
-@app.get("/api/transcripts", response_model=List[TranscriptResponse])
-def get_transcripts(
-    skip: int = 0,
-    limit: int = 100,
-    source_type: Optional[str] = None,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get a list of transcripts."""
-    query = db.query(Transcript)
+@app.get("/transcripts/")
+def list_transcripts(video_id: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    List all transcripts, optionally filtered by video ID.
     
-    if source_type:
-        query = query.filter(Transcript.source_type == source_type)
-    
-    transcripts = query.order_by(Transcript.created_at.desc()).offset(skip).limit(limit).all()
+    Args:
+        video_id: Optional video ID to filter by
+        db: Database session
+        
+    Returns:
+        List of transcripts
+    """
+    if video_id:
+        transcripts = db.query(Transcript).filter(Transcript.video_id == video_id).all()
+    else:
+        transcripts = db.query(Transcript).all()
     return transcripts
 
-@app.get("/api/transcripts/{transcript_id}", response_model=TranscriptResponse)
-def get_transcript(
-    transcript_id: uuid.UUID,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get details of a specific transcript."""
+@app.get("/transcripts/{transcript_id}")
+def get_transcript(transcript_id: str, db: Session = Depends(get_db)):
+    """
+    Get a transcript by ID.
+    
+    Args:
+        transcript_id: The ID of the transcript
+        db: Database session
+        
+    Returns:
+        The transcript object
+    """
     transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
     if not transcript:
         raise HTTPException(status_code=404, detail="Transcript not found")
     return transcript
 
-@app.post("/api/transcripts", response_model=TranscriptResponse)
-def create_transcript(
-    transcript: TranscriptCreate,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Create a new manual transcript."""
-    # Create transcript record
-    db_transcript = Transcript(
-        video_id=transcript.video_id,
-        source_type=transcript.source_type,
-        content=transcript.content,
-        format=transcript.format,
-        status="completed"
-    )
-    db.add(db_transcript)
-    db.commit()
-    db.refresh(db_transcript)
+@app.get("/summaries/")
+def list_summaries(transcript_id: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    List all summaries, optionally filtered by transcript ID.
     
-    # Create summarization job
-    create_summarization_job(db_transcript.id, db)
-    
-    return db_transcript
-
-@app.put("/api/transcripts/{transcript_id}/summarize")
-def summarize_transcript(
-    transcript_id: uuid.UUID,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Create a summarization job for a transcript."""
-    transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
-    if not transcript:
-        raise HTTPException(status_code=404, detail="Transcript not found")
-    
-    # Create summarization job
-    job = create_summarization_job(transcript.id, db)
-    
-    return {"message": "Summarization started", "job_id": job.id}
-
-# Summary endpoints
-@app.get("/api/summaries", response_model=List[SummaryResponse])
-def get_summaries(
-    skip: int = 0,
-    limit: int = 100,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get a list of summaries."""
-    summaries = db.query(Summary).order_by(Summary.created_at.desc()).offset(skip).limit(limit).all()
+    Args:
+        transcript_id: Optional transcript ID to filter by
+        db: Database session
+        
+    Returns:
+        List of summaries
+    """
+    if transcript_id:
+        summaries = db.query(Summary).filter(Summary.transcript_id == transcript_id).all()
+    else:
+        summaries = db.query(Summary).all()
     return summaries
 
-@app.get("/api/summaries/{summary_id}", response_model=SummaryResponse)
-def get_summary(
-    summary_id: uuid.UUID,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get details of a specific summary."""
+@app.get("/summaries/{summary_id}")
+def get_summary(summary_id: str, db: Session = Depends(get_db)):
+    """
+    Get a summary by ID.
+    
+    Args:
+        summary_id: The ID of the summary
+        db: Database session
+        
+    Returns:
+        The summary object
+    """
     summary = db.query(Summary).filter(Summary.id == summary_id).first()
     if not summary:
         raise HTTPException(status_code=404, detail="Summary not found")
     return summary
-
-# Job endpoints
-@app.get("/api/jobs/transcription", response_model=List[TranscriptionJobResponse])
-def get_transcription_jobs(
-    skip: int = 0,
-    limit: int = 100,
-    status: Optional[str] = None,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get a list of transcription jobs."""
-    query = db.query(TranscriptionJob)
-    
-    if status:
-        query = query.filter(TranscriptionJob.status == status)
-    
-    jobs = query.order_by(TranscriptionJob.created_at.desc()).offset(skip).limit(limit).all()
-    return jobs
-
-@app.get("/api/jobs/summarization", response_model=List[SummarizationJobResponse])
-def get_summarization_jobs(
-    skip: int = 0,
-    limit: int = 100,
-    status: Optional[str] = None,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get a list of summarization jobs."""
-    query = db.query(SummarizationJob)
-    
-    if status:
-        query = query.filter(SummarizationJob.status == status)
-    
-    jobs = query.order_by(SummarizationJob.created_at.desc()).offset(skip).limit(limit).all()
-    return jobs
-
-# Analytics endpoints
-@app.get("/api/analytics/overview", response_model=AnalyticsOverview)
-def get_analytics_overview(
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get overview analytics."""
-    # Count videos
-    total_videos = db.query(Video).count()
-    successful_videos = db.query(Video).filter(Video.status == "transcribed").count()
-    failed_videos = db.query(Video).filter(Video.status == "error").count()
-    
-    # Calculate success rate
-    success_rate = successful_videos / total_videos if total_videos > 0 else 0
-    
-    # Calculate average processing times
-    transcription_jobs = db.query(TranscriptionJob).filter(TranscriptionJob.processing_time_seconds != None).all()
-    summarization_jobs = db.query(SummarizationJob).filter(SummarizationJob.processing_time_seconds != None).all()
-    
-    avg_transcription_time = sum(job.processing_time_seconds for job in transcription_jobs) / len(transcription_jobs) if transcription_jobs else 0
-    avg_summarization_time = sum(job.processing_time_seconds for job in summarization_jobs) / len(summarization_jobs) if summarization_jobs else 0
-    avg_total_time = avg_transcription_time + avg_summarization_time
-    
-    return {
-        "total_videos": total_videos,
-        "successful_videos": successful_videos,
-        "failed_videos": failed_videos,
-        "success_rate": success_rate,
-        "avg_transcription_time": avg_transcription_time,
-        "avg_summarization_time": avg_summarization_time,
-        "avg_total_time": avg_total_time
-    }
-
-@app.get("/api/analytics/transcription", response_model=TranscriptionStats)
-def get_transcription_stats(
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get transcription analytics."""
-    # Count transcriptions
-    total_transcriptions = db.query(TranscriptionJob).count()
-    successful_transcriptions = db.query(TranscriptionJob).filter(TranscriptionJob.status == "completed").count()
-    failed_transcriptions = db.query(TranscriptionJob).filter(TranscriptionJob.status == "failed").count()
-    
-    # Calculate success rate
-    success_rate = successful_transcriptions / total_transcriptions if total_transcriptions > 0 else 0
-    
-    # Calculate average processing time
-    transcription_jobs = db.query(TranscriptionJob).filter(TranscriptionJob.processing_time_seconds != None).all()
-    avg_processing_time = sum(job.processing_time_seconds for job in transcription_jobs) / len(transcription_jobs) if transcription_jobs else 0
-    
-    # Calculate processing time by duration
-    processing_time_by_duration = {}
-    
-    # Get completed jobs with videos
-    completed_jobs = db.query(TranscriptionJob, Video)\
-        .join(Video, TranscriptionJob.video_id == Video.id)\
-        .filter(TranscriptionJob.status == "completed")\
-        .filter(TranscriptionJob.processing_time_seconds != None)\
-        .filter(Video.duration_seconds != None)\
-        .all()
-    
-    # Group by duration ranges
-    duration_ranges = {
-        "0-60s": (0, 60),
-        "60-300s": (60, 300),
-        "300-600s": (300, 600),
-        "600-1800s": (600, 1800),
-        "1800s+": (1800, float('inf'))
-    }
-    
-    for range_name, (min_duration, max_duration) in duration_ranges.items():
-        jobs_in_range = [job for job, video in completed_jobs 
-                         if min_duration <= video.duration_seconds < max_duration]
-        
-        if jobs_in_range:
-            avg_time = sum(job.processing_time_seconds for job in jobs_in_range) / len(jobs_in_range)
-            processing_time_by_duration[range_name] = avg_time
-        else:
-            processing_time_by_duration[range_name] = 0
-    
-    return {
-        "total_transcriptions": total_transcriptions,
-        "successful_transcriptions": successful_transcriptions,
-        "failed_transcriptions": failed_transcriptions,
-        "success_rate": success_rate,
-        "avg_processing_time": avg_processing_time,
-        "processing_time_by_duration": processing_time_by_duration
-    }
-
-@app.get("/api/analytics/summarization", response_model=SummarizationStats)
-def get_summarization_stats(
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get summarization analytics."""
-    # Count summarizations
-    total_summarizations = db.query(SummarizationJob).count()
-    successful_summarizations = db.query(SummarizationJob).filter(SummarizationJob.status == "completed").count()
-    failed_summarizations = db.query(SummarizationJob).filter(SummarizationJob.status == "failed").count()
-    
-    # Calculate success rate
-    success_rate = successful_summarizations / total_summarizations if total_summarizations > 0 else 0
-    
-    # Calculate average processing time
-    summarization_jobs = db.query(SummarizationJob).filter(SummarizationJob.processing_time_seconds != None).all()
-    avg_processing_time = sum(job.processing_time_seconds for job in summarization_jobs) / len(summarization_jobs) if summarization_jobs else 0
-    
-    return {
-        "total_summarizations": total_summarizations,
-        "successful_summarizations": successful_summarizations,
-        "failed_summarizations": failed_summarizations,
-        "success_rate": success_rate,
-        "avg_processing_time": avg_processing_time
-    }
-
-@app.get("/api/analytics/trends", response_model=AnalyticsTrends)
-def get_analytics_trends(
-    days: int = 7,
-    db: Session = Depends(get_db_session),
-    current_user = Depends(get_current_active_user)
-):
-    """Get processing trends over time."""
-    trends = []
-    
-    # Calculate date range
-    end_date = datetime.utcnow()
-    start_date = end_date - timedelta(days=days)
-    
-    # Generate data for each day
-    current_date = start_date
-    while current_date <= end_date:
-        next_date = current_date + timedelta(days=1)
-        
-        # Count transcriptions for this day
-        transcription_count = db.query(TranscriptionJob)\
-            .filter(TranscriptionJob.created_at >= current_date)\
-            .filter(TranscriptionJob.created_at < next_date)\
-            .count()
-        
-        # Count summarizations for this day
-        summarization_count = db.query(SummarizationJob)\
-            .filter(SummarizationJob.created_at >= current_date)\
-            .filter(SummarizationJob.created_at < next_date)\
-            .count()
-        
-        # Calculate average transcription time for this day
-        transcription_jobs = db.query(TranscriptionJob)\
-            .filter(TranscriptionJob.created_at >= current_date)\
-            .filter(TranscriptionJob.created_at < next_date)\
-            .filter(TranscriptionJob.processing_time_seconds != None)\
-            .all()
-        
-        avg_transcription_time = sum(job.processing_time_seconds for job in transcription_jobs) / len(transcription_jobs) if transcription_jobs else 0
-        
-        # Calculate average summarization time for this day
-        summarization_jobs = db.query(SummarizationJob)\
-            .filter(SummarizationJob.created_at >= current_date)\
-            .filter(SummarizationJob.created_at < next_date)\
-            .filter(SummarizationJob.processing_time_seconds != None)\
-            .all()
-        
-        avg_summarization_time = sum(job.processing_time_seconds for job in summarization_jobs) / len(summarization_jobs) if summarization_jobs else 0
-        
-        # Add to trends
-        trends.append({
-            "date": current_date.strftime("%Y-%m-%d"),
-            "transcription_count": transcription_count,
-            "summarization_count": summarization_count,
-            "avg_transcription_time": avg_transcription_time,
-            "avg_summarization_time": avg_summarization_time
-        })
-        
-        # Move to next day
-        current_date = next_date
-    
-    return {"trends": trends}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)

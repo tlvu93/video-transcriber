@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 from typing import Optional, Dict, Any
 
-from common.models import TranscriptionJob, SummarizationJob
+from common.common.models import TranscriptionJob, SummarizationJob
 
 # Configure logging
 logging.basicConfig(

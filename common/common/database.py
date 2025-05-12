@@ -1,11 +1,12 @@
 import os
 import logging
+import json
+from contextlib import contextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
-from contextlib import contextmanager
 
-from common.models import Base
+from common.common.config import DATABASE_URL, DB_PATH
 
 # Configure logging
 logging.basicConfig(
@@ -14,31 +15,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger('database')
 
-# Get database URL from environment variable or use default
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://videotranscriber:videotranscriber@localhost/videotranscriber")
+# Create database directory if it doesn't exist
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-# Create engine
+# Create SQLAlchemy engine
 engine = create_engine(DATABASE_URL)
-
-# Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
 def init_db():
-    """Initialize the database by creating all tables."""
-    # Check if we should skip database initialization
-    if os.environ.get("SKIP_DB_INIT", "false").lower() == "true":
-        logger.info("Skipping database table creation (SKIP_DB_INIT=true)")
-        return
-        
-    try:
-        logger.info("Creating database tables...")
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables created successfully")
-    except Exception as e:
-        logger.error(f"Error creating database tables: {str(e)}")
-        raise
+    """Initialize the database."""
+    from common.common.models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob
+    
+    logger.info(f"Creating database tables at {DB_PATH}")
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created successfully")
 
-def get_db_session():
+@contextmanager
+def get_db():
     """Get a database session."""
     db = SessionLocal()
     try:
@@ -46,118 +40,95 @@ def get_db_session():
     finally:
         db.close()
 
-@contextmanager
-def get_db():
-    """Context manager for database sessions."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 def migrate_from_json_to_db():
-    """Migrate data from the JSON file to the database."""
-    from common.config import DB_PATH
-    import json
-    import os
-    from common.models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob
+    """Migrate data from JSON files to the database."""
+    from common.common.models import Video, Transcript, Summary
     
-    if not os.path.exists(DB_PATH):
-        logger.warning(f"JSON database file not found: {DB_PATH}")
+    # Check if migration is needed
+    with get_db() as db:
+        # If there are already videos in the database, skip migration
+        if db.query(Video).count() > 0:
+            logger.info("Database already contains data, skipping migration")
+            return
+    
+    # Paths to JSON files
+    videos_json = os.path.join(os.path.dirname(DB_PATH), "videos.json")
+    transcripts_json = os.path.join(os.path.dirname(DB_PATH), "transcripts.json")
+    summaries_json = os.path.join(os.path.dirname(DB_PATH), "summaries.json")
+    
+    # Check if JSON files exist
+    if not (os.path.exists(videos_json) or os.path.exists(transcripts_json) or os.path.exists(summaries_json)):
+        logger.info("No JSON files found for migration")
         return
     
-    try:
-        logger.info(f"Migrating data from JSON file: {DB_PATH}")
-        
-        # Load JSON data
-        with open(DB_PATH, "r") as f:
-            json_db = json.load(f)
-        
-        logger.info(f"Loaded {len(json_db)} entries from JSON file")
-        
-        # Create database session
-        with get_db() as db:
-            # Process each entry
-            for file_hash, data in json_db.items():
-                # Check if video already exists
-                existing_video = db.query(Video).filter(Video.file_hash == file_hash).first()
-                if existing_video:
-                    logger.info(f"Video already exists in database: {data['filename']}")
-                    continue
-                
-                # Create video record
-                video = Video(
-                    file_hash=file_hash,
-                    filename=data["filename"],
-                    status="completed",
-                    video_metadata=data.get("metadata", {}),  # Updated to use the renamed column
-                )
-                
-                # Extract additional metadata if available
-                if "metadata" in data and "format" in data["metadata"] and "duration" in data["metadata"]["format"]:
-                    video.duration_seconds = float(data["metadata"]["format"]["duration"])
-                
-                if "metadata" in data and "streams" in data["metadata"] and len(data["metadata"]["streams"]) > 0:
-                    if "width" in data["metadata"]["streams"][0]:
-                        video.resolution_width = data["metadata"]["streams"][0]["width"]
-                    if "height" in data["metadata"]["streams"][0]:
-                        video.resolution_height = data["metadata"]["streams"][0]["height"]
-                
-                # Extract file type
-                video.file_type = os.path.splitext(data["filename"])[1].lstrip('.')
-                
-                db.add(video)
-                db.flush()  # Flush to get the video ID
-                
-                # Create transcript record if available
-                transcript_path = os.path.join("data/transcriptions", f"{os.path.splitext(data['filename'])[0]}.txt")
-                if os.path.exists(transcript_path):
-                    with open(transcript_path, "r", encoding="utf-8") as f:
-                        transcript_content = f.read()
-                    
+    logger.info("Starting migration from JSON to database")
+    
+    # Migrate videos
+    if os.path.exists(videos_json):
+        try:
+            with open(videos_json, "r") as f:
+                videos_data = json.load(f)
+            
+            with get_db() as db:
+                for video_data in videos_data:
+                    video = Video(
+                        id=video_data.get("id"),
+                        filename=video_data.get("filename"),
+                        status=video_data.get("status", "pending"),
+                        created_at=video_data.get("created_at"),
+                        metadata=video_data.get("metadata", {})
+                    )
+                    db.add(video)
+                db.commit()
+            
+            logger.info(f"Migrated {len(videos_data)} videos from JSON to database")
+        except Exception as e:
+            logger.error(f"Error migrating videos: {str(e)}")
+    
+    # Migrate transcripts
+    if os.path.exists(transcripts_json):
+        try:
+            with open(transcripts_json, "r") as f:
+                transcripts_data = json.load(f)
+            
+            with get_db() as db:
+                for transcript_data in transcripts_data:
                     transcript = Transcript(
-                        video_id=video.id,
-                        source_type="video",
-                        content=transcript_content,
-                        format="txt",
-                        status="completed"
+                        id=transcript_data.get("id"),
+                        video_id=transcript_data.get("video_id"),
+                        source_type=transcript_data.get("source_type", "video"),
+                        content=transcript_data.get("content"),
+                        format=transcript_data.get("format", "txt"),
+                        status=transcript_data.get("status", "completed"),
+                        created_at=transcript_data.get("created_at")
                     )
                     db.add(transcript)
-                    db.flush()  # Flush to get the transcript ID
-                    
-                    # Create transcription job record
-                    transcription_job = TranscriptionJob(
-                        video_id=video.id,
-                        status="completed",
-                        processing_time_seconds=None  # We don't have this information
-                    )
-                    db.add(transcription_job)
-                    
-                    # Create summary record if available
-                    summary_path = os.path.join("data/summaries", f"{os.path.splitext(data['filename'])[0]}_summary.txt")
-                    if os.path.exists(summary_path):
-                        with open(summary_path, "r", encoding="utf-8") as f:
-                            summary_content = f.read()
-                        
-                        summary = Summary(
-                            transcript_id=transcript.id,
-                            content=summary_content,
-                            status="completed"
-                        )
-                        db.add(summary)
-                        
-                        # Create summarization job record
-                        summarization_job = SummarizationJob(
-                            transcript_id=transcript.id,
-                            status="completed",
-                            processing_time_seconds=None  # We don't have this information
-                        )
-                        db.add(summarization_job)
+                db.commit()
             
-            # Commit all changes
-            db.commit()
-            logger.info("Data migration completed successfully")
+            logger.info(f"Migrated {len(transcripts_data)} transcripts from JSON to database")
+        except Exception as e:
+            logger.error(f"Error migrating transcripts: {str(e)}")
     
-    except Exception as e:
-        logger.error(f"Error migrating data: {str(e)}")
-        raise
+    # Migrate summaries
+    if os.path.exists(summaries_json):
+        try:
+            with open(summaries_json, "r") as f:
+                summaries_data = json.load(f)
+            
+            with get_db() as db:
+                for summary_data in summaries_data:
+                    summary = Summary(
+                        id=summary_data.get("id"),
+                        transcript_id=summary_data.get("transcript_id"),
+                        content=summary_data.get("content"),
+                        status=summary_data.get("status", "completed"),
+                        created_at=summary_data.get("created_at")
+                    )
+                    db.add(summary)
+                db.commit()
+            
+            logger.info(f"Migrated {len(summaries_data)} summaries from JSON to database")
+        except Exception as e:
+            logger.error(f"Error migrating summaries: {str(e)}")
+    
+    logger.info("Migration from JSON to database completed")

@@ -1,60 +1,119 @@
-import hashlib
-import subprocess
-import json
-import time
 import os
+import json
+import logging
+import subprocess
+from typing import Dict, Any, Optional
 
-def get_file_hash(filepath, max_retries=5, retry_delay=2):
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('utils')
+
+def get_video_metadata(filepath: str) -> Dict[str, Any]:
     """
-    Calculate the SHA-256 hash of a file with retry mechanism for handling locked files.
+    Get metadata for a video file using ffprobe.
     
     Args:
-        filepath: Path to the file
-        max_retries: Maximum number of retry attempts
-        retry_delay: Delay in seconds between retries
+        filepath: Path to the video file
         
     Returns:
-        SHA-256 hash of the file as a hexadecimal string
-        
-    Raises:
-        Exception: If the file cannot be accessed after all retry attempts
+        Dictionary containing video metadata
     """
-    retries = 0
-    while retries < max_retries:
-        try:
-            # Check if file exists and is accessible
-            if not os.path.exists(filepath):
-                print(f"⚠️ File not found: {filepath}")
-                return None
-                
-            # Check if file is still being written (size changing)
-            initial_size = os.path.getsize(filepath)
-            time.sleep(0.5)  # Brief delay to check if size changes
-            if initial_size != os.path.getsize(filepath):
-                print(f"⚠️ File is still being written: {filepath}")
-                time.sleep(retry_delay)
-                retries += 1
-                continue
-                
-            # Try to open and hash the file
-            hasher = hashlib.sha256()
-            with open(filepath, "rb") as f:
-                while chunk := f.read(8192):
-                    hasher.update(chunk)
-            return hasher.hexdigest()
-            
-        except (PermissionError, OSError) as e:
-            print(f"⚠️ Cannot access file (attempt {retries+1}/{max_retries}): {filepath}")
-            print(f"   Error: {str(e)}")
-            time.sleep(retry_delay)
-            retries += 1
+    logger.info(f"Getting metadata for video: {filepath}")
     
-    print(f"❌ Failed to access file after {max_retries} attempts: {filepath}")
-    return None
+    try:
+        # Run ffprobe to get video metadata
+        cmd = [
+            "ffprobe",
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            filepath
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        metadata = json.loads(result.stdout)
+        
+        # Extract relevant metadata
+        video_info = {
+            "filename": os.path.basename(filepath),
+            "format": metadata.get("format", {}).get("format_name", "unknown"),
+            "duration": float(metadata.get("format", {}).get("duration", 0)),
+            "size": int(metadata.get("format", {}).get("size", 0)),
+            "bitrate": int(metadata.get("format", {}).get("bit_rate", 0)),
+        }
+        
+        # Extract video stream info
+        video_streams = [s for s in metadata.get("streams", []) if s.get("codec_type") == "video"]
+        if video_streams:
+            video_stream = video_streams[0]
+            video_info.update({
+                "width": video_stream.get("width", 0),
+                "height": video_stream.get("height", 0),
+                "codec": video_stream.get("codec_name", "unknown"),
+                "fps": eval(video_stream.get("r_frame_rate", "0/1")),
+            })
+        
+        # Extract audio stream info
+        audio_streams = [s for s in metadata.get("streams", []) if s.get("codec_type") == "audio"]
+        if audio_streams:
+            audio_stream = audio_streams[0]
+            video_info.update({
+                "audio_codec": audio_stream.get("codec_name", "unknown"),
+                "audio_channels": audio_stream.get("channels", 0),
+                "audio_sample_rate": audio_stream.get("sample_rate", 0),
+            })
+        
+        logger.info(f"Video metadata retrieved successfully: {video_info}")
+        return video_info
+        
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error running ffprobe: {e}")
+        logger.error(f"ffprobe stderr: {e.stderr}")
+        return {"error": f"Error running ffprobe: {e}"}
+    
+    except json.JSONDecodeError as e:
+        logger.error(f"Error parsing ffprobe output: {e}")
+        return {"error": f"Error parsing ffprobe output: {e}"}
+    
+    except Exception as e:
+        logger.error(f"Error getting video metadata: {e}")
+        return {"error": f"Error getting video metadata: {e}"}
 
-def get_video_metadata(filepath):
-    result = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", filepath],
-        capture_output=True, text=True
-    )
-    return json.loads(result.stdout)
+def format_duration(seconds: float) -> str:
+    """
+    Format duration in seconds as HH:MM:SS.
+    
+    Args:
+        seconds: Duration in seconds
+        
+    Returns:
+        Formatted duration string
+    """
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    seconds = int(seconds % 60)
+    
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+def format_file_size(size_bytes: int) -> str:
+    """
+    Format file size in bytes as human-readable string.
+    
+    Args:
+        size_bytes: File size in bytes
+        
+    Returns:
+        Formatted file size string
+    """
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
