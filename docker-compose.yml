@@ -8,7 +8,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5435:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U videotranscriber"]
       interval: 10s
@@ -116,6 +116,32 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s # Give time for the model to be pulled
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  watcher:
+    build:
+      context: .
+      dockerfile: watcher-service/Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./common:/app/common
+      - ./api-service:/app/api-service
+      - ./watcher-service:/app/watcher-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
+      - PYTHONUNBUFFERED=1
+    command: ["python", "-m", "watcher.watcher"]
+    working_dir: /app/watcher-service
+    restart: unless-stopped
     logging:
       driver: "json-file"
       options:

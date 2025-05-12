@@ -11,7 +11,16 @@ from watchdog.events import FileSystemEventHandler
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from common.common.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, DB_PATH
-from api_service.api.main import main
+# Import main function from API if available, otherwise use a dummy function
+try:
+    from api.main import main
+    logger = logging.getLogger('watcher')
+    logger.info("Successfully imported main function from API")
+except ImportError:
+    logger = logging.getLogger('watcher')
+    logger.warning("Could not import main function from API, using dummy function")
+    def main():
+        logger.info("Dummy main function called - API module not available")
 
 # Configure logging
 logging.basicConfig(

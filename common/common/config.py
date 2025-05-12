@@ -12,7 +12,7 @@ SUMMARY_DIR = os.path.join(DATA_DIR, "summaries")
 
 # Database
 DB_PATH = os.path.join(DATA_DIR, "db", "video_transcriber.db")
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DB_PATH}")
 
 # LLM settings
 LLM_HOST = os.environ.get("LLM_HOST", "http://localhost:11434/api/generate")
