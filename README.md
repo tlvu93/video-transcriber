@@ -8,9 +8,8 @@ The project has been restructured into separate services:
 
 - **api-service**: FastAPI-based API for accessing videos, transcripts, and summaries
 - **common**: Shared code used by all services (database, models, config, etc.)
-- **processor-service**: Processes videos to generate transcripts and summaries
 - **summarization-service**: Generates summaries from transcripts
-- **transcription-service**: Transcribes videos to text
+- **transcription-service**: Transcribes videos to text and processes videos to generate transcripts
 - **watcher-service**: Watches for new videos and triggers processing
 
 ## Running the Application

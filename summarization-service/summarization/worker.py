@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from common.models import SummarizationJob, Transcript, Summary, Video
 from common.config import TRANSCRIPT_DIR, SUMMARY_DIR
 
-from summarization.summarizer import generate_summary
+from summarization.summarizer import create_summary
 
 # Configure logging
 logging.basicConfig(
@@ -54,7 +54,8 @@ def process_summarization_job(job: SummarizationJob, db: Session) -> Tuple[bool,
         
         # Generate summary
         logger.info(f"Generating summary for transcript: {transcript.id}")
-        summary_text = generate_summary(transcript_content)
+        # Pass a placeholder for video_path since we don't have the actual path
+        summary_text = create_summary(transcript_content, "manual_transcript")
         
         # Save summary to file
         with open(summary_path, "w", encoding="utf-8") as f:

@@ -53,7 +53,7 @@ def run_watcher():
 def run_processor(filepath):
     """Run the processor on a specific file."""
     logger.info(f"Processing file: {filepath}")
-    processor = import_module("processor-service/processor/processor.py", "processor")
+    processor = import_module("transcription-service/transcription/processor.py", "processor")
     result = processor.process_video(filepath)
     logger.info(f"Processing result: {result}")
 
