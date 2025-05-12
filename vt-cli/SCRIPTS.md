@@ -22,8 +22,6 @@ The `vt.sh` script provides a unified interface to all other scripts. A symlink 
 ./vt user create-admin
 ./vt user list
 
-# Run locally
-./vt local
 
 # Get help
 ./vt help
@@ -39,7 +37,6 @@ The scripts have been organized into a modular structure:
 - `database.sh`: Database management
 - `user.sh`: User management
 - `init.sh`: Project initialization
-- `local.sh`: Run the application locally (without Docker)
 
 ## Common Usage
 
@@ -160,20 +157,6 @@ To initialize with custom admin credentials:
 ./user.sh list
 ```
 
-### Running Locally (Without Docker)
-
-```bash
-# Run the application locally
-./local.sh
-```
-
-This will:
-
-1. Check if PostgreSQL is running locally
-2. Check if Ollama is running locally
-3. Run database migrations
-4. Start the application
-
 ## Getting Help
 
 All scripts provide help information when run with the `-h` or `--help` flag:
@@ -184,7 +167,6 @@ All scripts provide help information when run with the `-h` or `--help` flag:
 ./vt docker -h
 ./vt db -h
 ./vt user -h
-./vt local -h
 ```
 
 Or when run without any arguments:

@@ -36,7 +36,6 @@ The scripts have been organized into a modular structure:
 - `database.sh`: Database management
 - `user.sh`: User management
 - `init.sh`: Project initialization
-- `local.sh`: Run the application locally (without Docker)
 
 ## Detailed Documentation
 
@@ -113,11 +112,4 @@ All scripts provide help information when run with the `-h` or `--help` flag:
 
 # List all users
 ./vt user list
-```
-
-### Run Locally (Without Docker)
-
-```bash
-# Run the application locally
-./vt local
 ```

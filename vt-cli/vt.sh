@@ -12,7 +12,6 @@ usage() {
   docker <command>        Manage Docker services
   db <command>            Manage database
   user <command>          Manage users
-  local                   Run locally (without Docker)
   help                    Show this help message"
     local examples="  ./vt init                  # Initialize with default settings
   ./vt init -u admin -p pass  # Initialize with custom admin
@@ -20,8 +19,7 @@ usage() {
   ./vt docker logs api       # View logs of API service
   ./vt db migrate            # Run database migrations
   ./vt db backup             # Create database backup
-  ./vt user create-admin     # Create admin user
-  ./vt local                 # Run locally"
+  ./vt user create-admin     # Create admin user"
     
     display_usage "$description" "$options" "$examples"
     
@@ -55,9 +53,6 @@ main() {
             ;;
         user)
             "$DIR/user.sh" "$@"
-            ;;
-        local)
-            "$DIR/local.sh" "$@"
             ;;
         help)
             usage

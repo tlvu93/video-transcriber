@@ -52,4 +52,3 @@ All scripts provide help information when run with the `-h` or `--help` flag:
 - `summarization-service/`: Service for summarizing transcriptions
 - `transcription-service/`: Service for transcribing videos
 - `vt-cli/`: CLI tools for managing the application
-- `watcher-service/`: Service for watching for new videos
