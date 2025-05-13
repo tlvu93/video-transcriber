@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from common.common.database import get_db
 from common.common.models import Video, Transcript, TranscriptionJob
 from common.common.job_queue import get_next_transcription_job, mark_job_started, mark_job_completed, mark_job_failed, create_summarization_job
-from common.common.config import VIDEO_DIR, TRANSCRIPT_DIR
+from transcription.config import VIDEO_DIR, TRANSCRIPT_DIR
 
 # Configure logging
 logging.basicConfig(

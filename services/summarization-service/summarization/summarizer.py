@@ -14,7 +14,7 @@ from langchain_core.prompts import PromptTemplate
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from common.common.config import TRANSCRIPT_DIR, SUMMARY_DIR, LLM_HOST, LLM_MODEL
+from summarization.config import TRANSCRIPT_DIR, SUMMARY_DIR, LLM_HOST, LLM_MODEL
 
 # Configure logging
 logging.basicConfig(
