@@ -29,6 +29,8 @@ services:
       - ./data:/app/data
       - ./common:/app/common
       - ./api-service:/app/api-service
+      - ./transcription-service:/app/transcription-service
+      - ./summarization-service:/app/summarization-service
     depends_on:
       postgres:
         condition: service_healthy

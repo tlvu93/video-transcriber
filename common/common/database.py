@@ -76,7 +76,7 @@ def migrate_from_json_to_db():
                         filename=video_data.get("filename"),
                         status=video_data.get("status", "pending"),
                         created_at=video_data.get("created_at"),
-                        metadata=video_data.get("metadata", {})
+                        video_metadata=video_data.get("metadata", {})
                     )
                     db.add(video)
                 db.commit()

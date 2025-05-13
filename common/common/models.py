@@ -16,9 +16,10 @@ class Video(Base):
     
     id = Column(String, primary_key=True, default=generate_uuid)
     filename = Column(String, nullable=False)
+    file_hash = Column(String, nullable=True)  # Added file_hash field
     status = Column(String, default="pending")  # pending, transcribed, error
     created_at = Column(DateTime, default=datetime.utcnow)
-    metadata = Column(JSON, default=dict)
+    video_metadata = Column(JSON, default=dict)
     
     transcripts = relationship("Transcript", back_populates="video")
     transcription_jobs = relationship("TranscriptionJob", back_populates="video")

@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from common.common.database import get_db
 from common.common.models import Video, Transcript, TranscriptionJob
 from common.common.job_queue import get_next_transcription_job, mark_job_started, mark_job_completed, mark_job_failed, create_summarization_job
+from common.common.config import VIDEO_DIR, TRANSCRIPT_DIR
 
 # Configure logging
 logging.basicConfig(
@@ -67,7 +68,7 @@ def process_transcription_job(job: TranscriptionJob, db: Session) -> bool:
             raise ValueError(f"Video {job.video_id} not found")
         
         # Get video file path
-        filepath = os.path.join("data/videos", video.filename)
+        filepath = os.path.join("/app/data/videos", video.filename)
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Video file not found: {filepath}")
         
@@ -95,9 +96,9 @@ def process_transcription_job(job: TranscriptionJob, db: Session) -> bool:
         # Save SRT if available
         if "segments" in result:
             # Save SRT to file system
-            os.makedirs("data/transcriptions", exist_ok=True)
+            os.makedirs("/app/data/transcriptions", exist_ok=True)
             basename = os.path.splitext(video.filename)[0]
-            srt_path = os.path.join("data/transcriptions", f"{basename}.srt")
+            srt_path = os.path.join("/app/data/transcriptions", f"{basename}.srt")
             with open(srt_path, "w", encoding="utf-8") as f:
                 for i, seg in enumerate(result["segments"]):
                     f.write(f"{i+1}\n")
@@ -106,7 +107,7 @@ def process_transcription_job(job: TranscriptionJob, db: Session) -> bool:
             logger.info(f"SRT file saved to: {srt_path}")
             
             # Also save plain text transcript
-            txt_path = os.path.join("data/transcriptions", f"{basename}.txt")
+            txt_path = os.path.join("/app/data/transcriptions", f"{basename}.txt")
             with open(txt_path, "w", encoding="utf-8") as f:
                 f.write(transcript_text)
             logger.info(f"Transcript saved to: {txt_path}")

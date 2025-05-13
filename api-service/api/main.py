@@ -8,9 +8,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from common.common.database import init_db, migrate_from_json_to_db
-from transcription_service.transcription.transcription_worker import start_worker as start_transcription_worker
-from summarization_service.summarization.summarization_worker import start_worker as start_summarization_worker
-from api_service.api.routes.api import app as api_app
+from api.routes.api import app as api_app
+
+# Define worker functions that will be imported later
+def start_transcription_worker():
+    """Start the transcription worker."""
+    # Add the transcription-service directory to the Python path
+    transcription_path = str(Path(__file__).parent.parent.parent / "transcription-service")
+    if transcription_path not in sys.path:
+        sys.path.insert(0, transcription_path)
+    from transcription.transcription_worker import start_worker
+    start_worker()
+
+def start_summarization_worker():
+    """Start the summarization worker."""
+    # Add the summarization-service directory to the Python path
+    summarization_path = str(Path(__file__).parent.parent.parent / "summarization-service")
+    if summarization_path not in sys.path:
+        sys.path.insert(0, summarization_path)
+    from summarization.summarization_worker import start_worker
+    start_worker()
 import uvicorn
 
 # Configure logging
