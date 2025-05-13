@@ -35,9 +35,9 @@ run_migrations() {
     # Ensure database is running
     ensure_db_running
     
-    # Run migrations
+    # Run migrations from the api-service directory
     echo "Running database migrations..."
-    if docker-compose run --rm api alembic upgrade head; then
+    if docker-compose run --rm api alembic -c api-service/alembic.ini upgrade head; then
         echo "✅ Migrations completed successfully."
     else
         echo "❌ Migrations failed."
@@ -282,7 +282,7 @@ fix_database() {
     
     # Run migrations to create tables properly
     echo "Running database migrations..."
-    docker-compose run --rm -e SKIP_DB_INIT=true api alembic upgrade head
+    docker-compose run --rm -e SKIP_DB_INIT=true api alembic -c api-service/alembic.ini upgrade head
     
     echo "Migrations completed."
     
