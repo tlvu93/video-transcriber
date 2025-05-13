@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from common.common.config import TRANSCRIPT_DIR, VIDEO_DIR
-from common.common.utils import get_video_metadata
+from transcription.utils import get_video_metadata
 from summarization_service.summarization.summarizer import create_summary
 
 # Configure logging
