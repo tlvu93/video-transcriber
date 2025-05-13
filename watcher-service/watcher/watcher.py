@@ -4,6 +4,8 @@ import os
 import logging
 import traceback
 import hashlib
+import requests
+import json
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -11,10 +13,7 @@ from watchdog.events import FileSystemEventHandler
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from common.common.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, DB_PATH
-from common.common.database import get_db, init_db
-from common.common.models import Video
-from common.common.job_queue import create_transcription_job
+from watcher.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, API_URL
 
 # Configure logging
 logging.basicConfig(
@@ -32,7 +31,7 @@ def calculate_file_hash(file_path):
     return hash_md5.hexdigest()
 
 def process_video_file(file_path):
-    """Process a video file and add it to the database."""
+    """Process a video file and add it to the database via API."""
     try:
         # Get the filename from the path
         filename = os.path.basename(file_path)
@@ -42,43 +41,54 @@ def process_video_file(file_path):
         file_hash = calculate_file_hash(file_path)
         logger.info(f"File hash: {file_hash}")
         
-        # Check if the video already exists in the database
-        with get_db() as db:
-            # Check if a video with the same filename exists
-            existing_video = db.query(Video).filter(Video.filename == filename).first()
+        # Check if the video already exists in the database via API
+        check_url = f"{API_URL}/videos/check"
+        check_data = {
+            "filename": filename,
+            "file_hash": file_hash
+        }
+        
+        try:
+            response = requests.post(check_url, json=check_data)
+            response.raise_for_status()
             
+            existing_video = response.json()
             if existing_video:
-                logger.info(f"Video {filename} already exists in the database, updating status")
-                existing_video.status = "pending"
-                db.commit()
-                logger.info(f"Updated video status to 'pending'")
+                logger.info(f"Video {filename} already exists in the database with ID: {existing_video['id']}")
                 return
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error checking if video exists: {str(e)}")
+            # Continue with registration even if check fails
+        
+        # Register the video via API
+        register_url = f"{API_URL}/videos/register"
+        register_data = {
+            "filename": filename,
+            "file_hash": file_hash,
+            "video_metadata": {"file_hash": file_hash}
+        }
+        
+        try:
+            response = requests.post(register_url, json=register_data)
+            response.raise_for_status()
             
-            # Check if a video with the same file_hash exists
-            existing_video_by_hash = db.query(Video).filter(Video.file_hash == file_hash).first()
+            video = response.json()
+            logger.info(f"Added video {filename} to the database with ID: {video['id']}")
             
-            if existing_video_by_hash:
-                logger.info(f"Video with hash {file_hash} already exists in the database as {existing_video_by_hash.filename}")
-                logger.info(f"Not adding duplicate video {filename}")
-                return
+            # Create a transcription job for the video via API
+            job_url = f"{API_URL}/transcription-jobs/"
+            job_data = {
+                "video_id": video['id']
+            }
             
-            # Create a new video record
-            video = Video(
-                filename=filename,
-                file_hash=file_hash,
-                status="pending",
-                video_metadata={"file_hash": file_hash}
-            )
+            job_response = requests.post(job_url, json=job_data)
+            job_response.raise_for_status()
             
-            db.add(video)
-            db.commit()
-            db.refresh(video)
+            job = job_response.json()
+            logger.info(f"Created transcription job {job['id']} for video {video['id']}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error registering video or creating job: {str(e)}")
             
-            logger.info(f"Added video {filename} to the database with ID: {video.id}")
-            
-            # Create a transcription job for the video
-            transcription_job = create_transcription_job(video.id, db)
-            logger.info(f"Created transcription job {transcription_job.id} for video {video.id}")
     except Exception as e:
         logger.error(f"❌ Error processing video file {file_path}: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
@@ -115,9 +125,6 @@ def ensure_directories():
         os.makedirs(SUMMARY_DIR, exist_ok=True)
         logger.info(f"Summary directory: {SUMMARY_DIR}")
         
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        logger.info(f"Database directory: {os.path.dirname(DB_PATH)}")
-        
         logger.info("All directories created successfully")
     except Exception as e:
         logger.error(f"❌ Error creating directories: {str(e)}")
@@ -138,6 +145,19 @@ def process_existing_files():
         logger.error(f"❌ Error processing existing files: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
 
+def check_api_connection():
+    """Check if the API service is available."""
+    logger.info(f"Checking connection to API service at {API_URL}")
+    
+    try:
+        response = requests.get(f"{API_URL}/")
+        response.raise_for_status()
+        logger.info("API service is available")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Error connecting to API service: {str(e)}")
+        return False
+
 def start_watching():
     logger.info("Starting video transcriber watcher")
     
@@ -145,9 +165,10 @@ def start_watching():
         # Ensure all required directories exist
         ensure_directories()
         
-        # Initialize the database
-        init_db()
-        logger.info("Database initialized")
+        # Check API connection
+        if not check_api_connection():
+            logger.error("Cannot connect to API service. Exiting.")
+            return
         
         # Process existing files
         process_existing_files()

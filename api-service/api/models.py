@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Float, JSON
 from sqlalchemy.orm import relationship
 
-from common.common.database import Base
+from api.database import Base
 
 def generate_uuid():
     """Generate a UUID for use as a primary key."""

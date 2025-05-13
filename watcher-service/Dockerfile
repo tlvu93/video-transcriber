@@ -16,7 +16,7 @@ COPY api-service /app/api-service
 
 # Install watcher dependencies
 COPY watcher-service /app/watcher-service
-RUN pip install watchdog
+RUN pip install watchdog requests
 
 # Create necessary directories
 RUN mkdir -p /app/data/videos /app/data/transcriptions /app/data/summaries /app/data/db

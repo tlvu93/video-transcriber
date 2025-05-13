@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 
-from common.common.config import DATABASE_URL, DB_PATH
+from api.config import DATABASE_URL, DB_PATH
 
 # Configure logging
 logging.basicConfig(
@@ -25,7 +25,7 @@ Base = declarative_base()
 
 def init_db():
     """Initialize the database."""
-    from common.common.models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob
+    from api.models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob
     
     logger.info(f"Creating database tables at {DB_PATH}")
     Base.metadata.create_all(bind=engine)
@@ -42,7 +42,7 @@ def get_db():
 
 def migrate_from_json_to_db():
     """Migrate data from JSON files to the database."""
-    from common.common.models import Video, Transcript, Summary
+    from api.models import Video, Transcript, Summary
     
     # Check if migration is needed
     with get_db() as db:

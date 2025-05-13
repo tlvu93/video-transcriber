@@ -1,15 +1,17 @@
 import os
 import logging
 import shutil
-from typing import List, Optional
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, BackgroundTasks
+import hashlib
+from typing import List, Optional, Dict, Any
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, BackgroundTasks, Body
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
-from common.common.database import get_db
-from common.common.models import Video, Transcript, Summary
-from common.common.job_queue import create_transcription_job
-from common.common.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR
+from api.database import get_db
+from api.models import Video, Transcript, Summary
+from api.job_queue import create_transcription_job
+from api.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR
 
 # Configure logging
 logging.basicConfig(
@@ -25,6 +27,33 @@ app = FastAPI(title="Video Transcriber API")
 os.makedirs(VIDEO_DIR, exist_ok=True)
 os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
 os.makedirs(SUMMARY_DIR, exist_ok=True)
+
+# Pydantic models for request/response
+class VideoCreate(BaseModel):
+    filename: str
+    file_hash: Optional[str] = None
+    video_metadata: Optional[Dict[str, Any]] = None
+
+class VideoCheck(BaseModel):
+    filename: str
+    file_hash: Optional[str] = None
+
+class VideoResponse(BaseModel):
+    id: str
+    filename: str
+    status: str
+    created_at: Any
+    file_hash: Optional[str] = None
+    video_metadata: Optional[Dict[str, Any]] = None
+
+class TranscriptionJobCreate(BaseModel):
+    video_id: str
+
+class TranscriptionJobResponse(BaseModel):
+    id: str
+    video_id: str
+    status: str
+    created_at: Any
 
 @app.get("/")
 def read_root():
@@ -74,6 +103,127 @@ async def upload_video(
         "status": video.status,
         "created_at": video.created_at
     }
+
+@app.post("/videos/register", response_model=VideoResponse)
+async def register_video(
+    video_data: VideoCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Register a video file that already exists in the videos directory.
+    Used by the watcher service.
+    
+    Args:
+        video_data: The video data
+        db: Database session
+        
+    Returns:
+        The created or updated video object
+    """
+    logger.info(f"Registering video: {video_data.filename}")
+    
+    # Check if the video file exists
+    file_path = os.path.join(VIDEO_DIR, video_data.filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"Video file not found: {video_data.filename}")
+    
+    # Check if a video with the same filename exists
+    existing_video = db.query(Video).filter(Video.filename == video_data.filename).first()
+    
+    if existing_video:
+        logger.info(f"Video {video_data.filename} already exists in the database, updating status")
+        existing_video.status = "pending"
+        db.commit()
+        db.refresh(existing_video)
+        return existing_video
+    
+    # Check if a video with the same file_hash exists
+    if video_data.file_hash:
+        existing_video_by_hash = db.query(Video).filter(Video.file_hash == video_data.file_hash).first()
+        
+        if existing_video_by_hash:
+            logger.info(f"Video with hash {video_data.file_hash} already exists in the database as {existing_video_by_hash.filename}")
+            return existing_video_by_hash
+    
+    # Create a new video record
+    video = Video(
+        filename=video_data.filename,
+        file_hash=video_data.file_hash,
+        status="pending",
+        video_metadata=video_data.video_metadata or {"file_hash": video_data.file_hash}
+    )
+    
+    db.add(video)
+    db.commit()
+    db.refresh(video)
+    
+    logger.info(f"Added video {video_data.filename} to the database with ID: {video.id}")
+    
+    return video
+
+@app.post("/videos/check", response_model=Optional[VideoResponse])
+async def check_video_exists(
+    video_check: VideoCheck,
+    db: Session = Depends(get_db)
+):
+    """
+    Check if a video exists in the database by filename or file hash.
+    Used by the watcher service.
+    
+    Args:
+        video_check: The video check data
+        db: Database session
+        
+    Returns:
+        The video object if found, None otherwise
+    """
+    logger.info(f"Checking if video exists: {video_check.filename}")
+    
+    # Check if a video with the same filename exists
+    existing_video = db.query(Video).filter(Video.filename == video_check.filename).first()
+    
+    if existing_video:
+        logger.info(f"Video {video_check.filename} found in the database")
+        return existing_video
+    
+    # Check if a video with the same file_hash exists
+    if video_check.file_hash:
+        existing_video_by_hash = db.query(Video).filter(Video.file_hash == video_check.file_hash).first()
+        
+        if existing_video_by_hash:
+            logger.info(f"Video with hash {video_check.file_hash} found in the database as {existing_video_by_hash.filename}")
+            return existing_video_by_hash
+    
+    logger.info(f"Video {video_check.filename} not found in the database")
+    return None
+
+@app.post("/transcription-jobs/", response_model=TranscriptionJobResponse)
+async def create_transcription_job_endpoint(
+    job_data: TranscriptionJobCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new transcription job.
+    Used by the watcher service.
+    
+    Args:
+        job_data: The job data
+        db: Database session
+        
+    Returns:
+        The created transcription job
+    """
+    logger.info(f"Creating transcription job for video: {job_data.video_id}")
+    
+    # Check if the video exists
+    video = db.query(Video).filter(Video.id == job_data.video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail=f"Video not found: {job_data.video_id}")
+    
+    # Create a transcription job
+    job = create_transcription_job(job_data.video_id, db)
+    
+    return job
 
 @app.get("/videos/")
 def list_videos(db: Session = Depends(get_db)):

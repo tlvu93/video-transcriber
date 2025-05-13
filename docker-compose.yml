@@ -64,8 +64,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      api:
+        condition: service_started
     environment:
       - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
+      - API_URL=http://api:8000
       - PYTHONUNBUFFERED=1
     command: ["python", "-m", "transcription.main"]
     working_dir: /app/transcription-service
@@ -89,10 +92,13 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
+      api:
+        condition: service_started
     environment:
       - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
       - LLM_HOST=http://ollama:11434/api/generate
       - LLM_MODEL=deepseek-r1
+      - API_URL=http://api:8000
       - PYTHONUNBUFFERED=1
     command: ["python", "-m", "summarization.main"]
     working_dir: /app/summarization-service
@@ -140,6 +146,7 @@ services:
         condition: service_started
     environment:
       - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
+      - API_URL=http://api:8000
       - PYTHONUNBUFFERED=1
     command: ["python", "-m", "watcher.watcher"]
     working_dir: /app/watcher-service
