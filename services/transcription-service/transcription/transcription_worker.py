@@ -10,7 +10,19 @@ from typing import Optional, Dict, Any, List
 import sys
 from pathlib import Path
 
+# Add the project root directory to the Python path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 from transcription.config import VIDEO_DIR, API_URL
+from transcription.processor import (
+    create_transcript_api,
+    update_job_status_api
+)
+from common.messaging import (
+    RabbitMQClient, 
+    publish_transcription_created_event,
+    publish_job_status_changed_event
+)
 
 # Configure logging
 logging.basicConfig(
@@ -18,6 +30,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('transcription_worker')
+
+# Initialize RabbitMQ client
+rabbitmq_client = RabbitMQClient()
 
 # Global model instance
 model = None
@@ -51,64 +66,12 @@ def get_video_from_api(video_id: str) -> Dict[str, Any]:
     response.raise_for_status()
     return response.json()
 
-def mark_job_started_api(job_id: str) -> None:
-    """Mark job as started via API."""
-    response = requests.post(f"{API_URL}/transcription-jobs/{job_id}/start")
-    response.raise_for_status()
-    logger.info(f"Job {job_id} marked as started")
-
-def mark_job_completed_api(job_id: str, processing_time: float) -> None:
-    """Mark job as completed via API."""
-    data = {"processing_time_seconds": processing_time}
-    response = requests.post(f"{API_URL}/transcription-jobs/{job_id}/complete", json=data)
-    response.raise_for_status()
-    logger.info(f"Job {job_id} marked as completed in {processing_time:.2f} seconds")
-
-def mark_job_failed_api(job_id: str, error_details: Dict[str, Any]) -> None:
-    """Mark job as failed via API."""
-    response = requests.post(f"{API_URL}/transcription-jobs/{job_id}/fail", json={"error_details": error_details})
-    response.raise_for_status()
-    logger.info(f"Job {job_id} marked as failed: {error_details}")
-
-def create_transcript_api(video_id: str, content: str, segments: Optional[List[Dict[str, Any]]] = None, format: str = "txt") -> Dict[str, Any]:
-    """Create transcript via API."""
-    # Format segments for database storage if they exist
-    formatted_segments = None
-    if segments:
-        formatted_segments = []
-        for i, seg in enumerate(segments):
-            formatted_segments.append({
-                "id": i + 1,
-                "start_time": seg["start"],
-                "end_time": seg["end"],
-                "text": seg["text"].strip()
-            })
-    
-    data = {
-        "video_id": video_id,
-        "source_type": "video",
-        "content": content,
-        "format": format,
-        "status": "completed",
-        "segments": formatted_segments
-    }
-    response = requests.post(f"{API_URL}/transcripts/", json=data)
-    response.raise_for_status()
-    return response.json()
-
 def update_video_status_api(video_id: str, status: str) -> None:
     """Update video status via API."""
     data = {"status": status}
     response = requests.patch(f"{API_URL}/videos/{video_id}", json=data)
     response.raise_for_status()
     logger.info(f"Video {video_id} status updated to {status}")
-
-def create_summarization_job_api(transcript_id: str) -> Dict[str, Any]:
-    """Create summarization job via API."""
-    data = {"transcript_id": transcript_id}
-    response = requests.post(f"{API_URL}/summarization-jobs/", json=data)
-    response.raise_for_status()
-    return response.json()
 
 def process_transcription_job(job_id: str) -> bool:
     """
@@ -128,7 +91,7 @@ def process_transcription_job(job_id: str) -> bool:
         video_id = job["video_id"]
         
         # Mark job as started
-        mark_job_started_api(job_id)
+        update_job_status_api(job_id, "processing")
         
         # Get video details
         video = get_video_from_api(video_id)
@@ -149,17 +112,27 @@ def process_transcription_job(job_id: str) -> bool:
         
         # Create transcript via API
         segments = result.get("segments", None)
-        transcript = create_transcript_api(video_id, transcript_text, segments, "srt")
+        
+        # Format segments for database storage if they exist
+        formatted_segments = None
+        if segments:
+            formatted_segments = []
+            for i, seg in enumerate(segments):
+                formatted_segments.append({
+                    "id": i + 1,
+                    "start_time": seg["start"],
+                    "end_time": seg["end"],
+                    "text": seg["text"].strip()
+                })
+        
+        transcript = create_transcript_api(video_id, transcript_text, formatted_segments)
 
         # Update video status
         update_video_status_api(video_id, "transcribed")
         
-        # Create summarization job
-        create_summarization_job_api(transcript["id"])
-        
         # Mark job as completed
         processing_time = time.time() - start_time
-        mark_job_completed_api(job_id, processing_time)
+        update_job_status_api(job_id, "completed", processing_time)
         
         logger.info(f"Transcription completed for video {video['filename']} in {processing_time:.2f} seconds")
         return True
@@ -174,7 +147,7 @@ def process_transcription_job(job_id: str) -> bool:
             "traceback": traceback.format_exc()
         }
         try:
-            mark_job_failed_api(job_id, error_details)
+            update_job_status_api(job_id, "failed", error_details=error_details)
         except Exception as mark_error:
             logger.error(f"Error marking job as failed: {str(mark_error)}")
         
@@ -199,37 +172,3 @@ def get_next_transcription_job_api():
     except requests.exceptions.RequestException as e:
         logger.error(f"Error getting next transcription job: {str(e)}")
         return None
-
-def start_worker(poll_interval: int = 5):
-    """
-    Start the transcription worker.
-    
-    Args:
-        poll_interval: Time in seconds to wait between polling for new jobs
-    """
-    logger.info("Starting transcription worker")
-    
-    # Load Whisper model at startup
-    load_whisper_model()
-    
-    while True:
-        try:
-            # Get next job from API
-            job = get_next_transcription_job_api()
-            
-            if job:
-                logger.info(f"Processing transcription job {job['id']} for video {job['video_id']}")
-                process_transcription_job(job['id'])
-            else:
-                logger.debug("No pending transcription jobs")
-            
-            # Wait before checking for new jobs
-            time.sleep(poll_interval)
-            
-        except Exception as e:
-            logger.error(f"Error in transcription worker: {str(e)}")
-            logger.error(f"Exception traceback: {traceback.format_exc()}")
-            time.sleep(poll_interval)
-
-if __name__ == "__main__":
-    start_worker()

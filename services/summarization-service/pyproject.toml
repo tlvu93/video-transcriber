@@ -14,6 +14,7 @@ dependencies = [
     "nltk>=3.6.0",
     "langchain>=0.0.267",
     "langchain-core>=0.1.0",
+    "common @ file://../common",
 ]
 
 [project.optional-dependencies]

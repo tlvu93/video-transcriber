@@ -3,14 +3,20 @@ import os
 import sys
 import logging
 import traceback
+import requests
+import json
 from pathlib import Path
 
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from transcription.config import VIDEO_DIR
+from transcription.config import VIDEO_DIR, API_URL
 from transcription.utils import get_video_metadata
-from summarization_service.summarization.summarizer import create_summary
+from common.messaging import (
+    RabbitMQClient, 
+    publish_transcription_created_event,
+    publish_job_status_changed_event
+)
 
 # Configure logging
 logging.basicConfig(
@@ -18,6 +24,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('processor')
+
+# Initialize RabbitMQ client
+rabbitmq_client = RabbitMQClient()
 
 logger.info("Loading Whisper model...")
 model = whisper.load_model("base")
@@ -27,6 +36,101 @@ os.makedirs(VIDEO_DIR, exist_ok=True)
 
 logger.info(f"Video directory: {VIDEO_DIR}")
 
+def create_transcript_api(video_id, content, segments=None):
+    """Create a transcript via the API."""
+    try:
+        url = f"{API_URL}/transcripts/"
+        data = {
+            "video_id": video_id,
+            "source_type": "video",
+            "content": content,
+            "format": "txt",
+            "status": "completed",
+            "segments": segments or []
+        }
+        
+        response = requests.post(url, json=data)
+        response.raise_for_status()
+        
+        transcript = response.json()
+        logger.info(f"Created transcript {transcript['id']} for video {video_id}")
+        
+        # Publish transcript created event
+        try:
+            rabbitmq_client.connect()
+            publish_transcription_created_event(
+                rabbitmq_client, 
+                str(transcript['id']), 
+                str(video_id)
+            )
+            logger.info(f"Published transcription.created event for transcript {transcript['id']}")
+        except Exception as e:
+            logger.error(f"Error publishing event: {str(e)}")
+            # Continue with API-based job creation as fallback
+            
+            # Create a summarization job for the transcript via API
+            job_url = f"{API_URL}/summarization-jobs/"
+            job_data = {
+                "transcript_id": transcript['id']
+            }
+            
+            job_response = requests.post(job_url, json=job_data)
+            job_response.raise_for_status()
+            
+            job = job_response.json()
+            logger.info(f"Created summarization job {job['id']} for transcript {transcript['id']} via API (fallback)")
+        
+        return transcript
+    
+    except Exception as e:
+        logger.error(f"Error creating transcript: {str(e)}")
+        logger.error(f"Exception traceback: {traceback.format_exc()}")
+        return None
+
+def update_job_status_api(job_id, status, processing_time=None, error_details=None):
+    """Update the status of a transcription job via the API."""
+    try:
+        if status == "completed":
+            url = f"{API_URL}/transcription-jobs/{job_id}/complete"
+            data = {
+                "status": status,
+                "processing_time_seconds": processing_time
+            }
+        elif status == "failed":
+            url = f"{API_URL}/transcription-jobs/{job_id}/fail"
+            data = {
+                "status": status,
+                "error_details": error_details or {"error": "Unknown error"}
+            }
+        else:
+            url = f"{API_URL}/transcription-jobs/{job_id}/start"
+            data = {}
+        
+        response = requests.post(url, json=data)
+        response.raise_for_status()
+        
+        job = response.json()
+        logger.info(f"Updated transcription job {job_id} status to {status}")
+        
+        # Publish job status changed event
+        try:
+            rabbitmq_client.connect()
+            publish_job_status_changed_event(
+                rabbitmq_client, 
+                "transcription", 
+                str(job_id), 
+                status
+            )
+            logger.info(f"Published job.status.changed event for job {job_id}")
+        except Exception as e:
+            logger.error(f"Error publishing event: {str(e)}")
+        
+        return job
+    
+    except Exception as e:
+        logger.error(f"Error updating job status: {str(e)}")
+        logger.error(f"Exception traceback: {traceback.format_exc()}")
+        return None
 
 def process_video(filepath):
     logger.info(f"Processing video: {filepath}")
@@ -59,19 +163,7 @@ def process_video(filepath):
             logger.error(f"Exception traceback: {traceback.format_exc()}")
             return None, metadata, None
         
-  
-        
-        # Generate summary from transcript
-        logger.info("Starting summary generation...")
-        try:
-            summary = create_summary(transcript_text, filepath)
-            logger.info(f"Summary generated successfully, length: {len(summary)} characters")
-        except Exception as e:
-            logger.error(f"⚠️ Summary generation error: {str(e)}")
-            logger.error(f"Exception traceback: {traceback.format_exc()}")
-            summary = f"Error generating summary: {str(e)}"
-
-        return transcript_text, metadata, summary
+        return transcript_text, metadata, None
         
     except Exception as e:
         logger.error(f"❌ Error processing video: {str(e)}")

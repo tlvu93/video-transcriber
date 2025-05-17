@@ -17,6 +17,16 @@ from api.job_queue import (
     mark_job_started, mark_job_completed, mark_job_failed
 )
 from api.config import VIDEO_DIR
+from common.messaging import (
+    RabbitMQClient, 
+    publish_video_created_event,
+    publish_transcription_created_event,
+    publish_summary_created_event,
+    publish_job_status_changed_event
+)
+
+# Initialize RabbitMQ client
+rabbitmq_client = RabbitMQClient()
 
 # Configure logging
 logging.basicConfig(
@@ -159,7 +169,15 @@ async def upload_video(
     db.refresh(video)
     
     # Create transcription job
-    create_transcription_job(video.id, db)
+    job = create_transcription_job(video.id, db)
+    
+    # Publish video created event
+    try:
+        rabbitmq_client.connect()
+        publish_video_created_event(rabbitmq_client, str(video.id), video.filename)
+        publish_job_status_changed_event(rabbitmq_client, "transcription", str(job.id), "pending")
+    except Exception as e:
+        logger.error(f"Error publishing event: {str(e)}")
     
     return {
         "id": video.id,
@@ -376,6 +394,14 @@ async def start_transcription_job(job_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
     
     mark_job_started(job, db)
+    
+    # Publish job status changed event
+    try:
+        rabbitmq_client.connect()
+        publish_job_status_changed_event(rabbitmq_client, "transcription", str(job.id), "processing")
+    except Exception as e:
+        logger.error(f"Error publishing event: {str(e)}")
+    
     return job
 
 @app.post("/transcription-jobs/{job_id}/complete", response_model=TranscriptionJobResponse)
@@ -627,6 +653,13 @@ async def create_summary(
     db.commit()
     db.refresh(summary)
     
+    # Publish summary created event
+    try:
+        rabbitmq_client.connect()
+        publish_summary_created_event(rabbitmq_client, str(summary.id), str(summary.transcript_id))
+    except Exception as e:
+        logger.error(f"Error publishing event: {str(e)}")
+    
     return summary
 
 @app.patch("/transcripts/{transcript_id}", response_model=TranscriptResponse)
@@ -694,6 +727,13 @@ async def create_transcript(
     db.add(transcript)
     db.commit()
     db.refresh(transcript)
+    
+    # Publish transcript created event
+    try:
+        rabbitmq_client.connect()
+        publish_transcription_created_event(rabbitmq_client, str(transcript.id), str(transcript.video_id))
+    except Exception as e:
+        logger.error(f"Error publishing event: {str(e)}")
     
     return transcript
 

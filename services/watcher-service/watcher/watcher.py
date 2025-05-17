@@ -13,6 +13,10 @@ from watchdog.events import FileSystemEventHandler
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from watcher.config import VIDEO_DIR, API_URL
+from common.messaging import (
+    RabbitMQClient, 
+    publish_video_created_event
+)
 
 # Configure logging
 logging.basicConfig(
@@ -20,6 +24,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('watcher')
+
+# Initialize RabbitMQ client
+rabbitmq_client = RabbitMQClient()
 
 def calculate_file_hash(file_path):
     """Calculate MD5 hash of a file."""
@@ -74,17 +81,26 @@ def process_video_file(file_path):
             video = response.json()
             logger.info(f"Added video {filename} to the database with ID: {video['id']}")
             
-            # Create a transcription job for the video via API
-            job_url = f"{API_URL}/transcription-jobs/"
-            job_data = {
-                "video_id": video['id']
-            }
-            
-            job_response = requests.post(job_url, json=job_data)
-            job_response.raise_for_status()
-            
-            job = job_response.json()
-            logger.info(f"Created transcription job {job['id']} for video {video['id']}")
+            # Publish video created event
+            try:
+                rabbitmq_client.connect()
+                publish_video_created_event(rabbitmq_client, str(video['id']), filename)
+                logger.info(f"Published video.created event for video {video['id']}")
+            except Exception as e:
+                logger.error(f"Error publishing event: {str(e)}")
+                # Continue with API-based job creation as fallback
+                
+                # Create a transcription job for the video via API
+                job_url = f"{API_URL}/transcription-jobs/"
+                job_data = {
+                    "video_id": video['id']
+                }
+                
+                job_response = requests.post(job_url, json=job_data)
+                job_response.raise_for_status()
+                
+                job = job_response.json()
+                logger.info(f"Created transcription job {job['id']} for video {video['id']} via API (fallback)")
         except requests.exceptions.RequestException as e:
             logger.error(f"Error registering video or creating job: {str(e)}")
             
@@ -151,6 +167,19 @@ def check_api_connection():
         logger.error(f"❌ Error connecting to API service: {str(e)}")
         return False
 
+def check_rabbitmq_connection():
+    """Check if the RabbitMQ service is available."""
+    logger.info("Checking connection to RabbitMQ service")
+    
+    try:
+        rabbitmq_client.connect()
+        logger.info("RabbitMQ service is available")
+        rabbitmq_client.close()
+        return True
+    except Exception as e:
+        logger.error(f"❌ Error connecting to RabbitMQ service: {str(e)}")
+        return False
+
 def start_watching():
     logger.info("Starting video transcriber watcher")
     
@@ -162,6 +191,10 @@ def start_watching():
         if not check_api_connection():
             logger.error("Cannot connect to API service. Exiting.")
             return
+        
+        # Check RabbitMQ connection
+        check_rabbitmq_connection()
+        # Continue even if RabbitMQ is not available, we'll fall back to API
         
         # Process existing files
         process_existing_files()

@@ -11,6 +11,8 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = [
     "watchdog",
+    "requests",
+    "common @ file://../common",
 ]
 
 [project.optional-dependencies]
