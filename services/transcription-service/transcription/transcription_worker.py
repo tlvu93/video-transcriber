@@ -3,20 +3,14 @@ import logging
 import os
 import whisper
 import traceback
-from sqlalchemy.orm import Session
+import requests
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import sys
 from pathlib import Path
 
-# Add the project root directory to the Python path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from common.common.database import get_db
-from common.common.models import Video, Transcript, TranscriptionJob
-from common.common.job_queue import get_next_transcription_job, mark_job_started, mark_job_completed, mark_job_failed, create_summarization_job
-from transcription.config import VIDEO_DIR, TRANSCRIPT_DIR
+from transcription.config import VIDEO_DIR, TRANSCRIPT_DIR, API_URL
 
 # Configure logging
 logging.basicConfig(
@@ -45,13 +39,70 @@ def format_srt_timestamp(seconds):
     ms = int((seconds - int(seconds)) * 1000)
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
-def process_transcription_job(job: TranscriptionJob, db: Session) -> bool:
+def get_job_from_api(job_id: str) -> Dict[str, Any]:
+    """Get job details from API."""
+    response = requests.get(f"{API_URL}/transcription-jobs/{job_id}")
+    response.raise_for_status()
+    return response.json()
+
+def get_video_from_api(video_id: str) -> Dict[str, Any]:
+    """Get video details from API."""
+    response = requests.get(f"{API_URL}/videos/{video_id}")
+    response.raise_for_status()
+    return response.json()
+
+def mark_job_started_api(job_id: str) -> None:
+    """Mark job as started via API."""
+    response = requests.post(f"{API_URL}/transcription-jobs/{job_id}/start")
+    response.raise_for_status()
+    logger.info(f"Job {job_id} marked as started")
+
+def mark_job_completed_api(job_id: str, processing_time: float) -> None:
+    """Mark job as completed via API."""
+    data = {"processing_time_seconds": processing_time}
+    response = requests.post(f"{API_URL}/transcription-jobs/{job_id}/complete", json=data)
+    response.raise_for_status()
+    logger.info(f"Job {job_id} marked as completed in {processing_time:.2f} seconds")
+
+def mark_job_failed_api(job_id: str, error_details: Dict[str, Any]) -> None:
+    """Mark job as failed via API."""
+    response = requests.post(f"{API_URL}/transcription-jobs/{job_id}/fail", json={"error_details": error_details})
+    response.raise_for_status()
+    logger.info(f"Job {job_id} marked as failed: {error_details}")
+
+def create_transcript_api(video_id: str, content: str, format: str = "txt") -> Dict[str, Any]:
+    """Create transcript via API."""
+    data = {
+        "video_id": video_id,
+        "source_type": "video",
+        "content": content,
+        "format": format,
+        "status": "completed"
+    }
+    response = requests.post(f"{API_URL}/transcripts/", json=data)
+    response.raise_for_status()
+    return response.json()
+
+def update_video_status_api(video_id: str, status: str) -> None:
+    """Update video status via API."""
+    data = {"status": status}
+    response = requests.patch(f"{API_URL}/videos/{video_id}", json=data)
+    response.raise_for_status()
+    logger.info(f"Video {video_id} status updated to {status}")
+
+def create_summarization_job_api(transcript_id: str) -> Dict[str, Any]:
+    """Create summarization job via API."""
+    data = {"transcript_id": transcript_id}
+    response = requests.post(f"{API_URL}/summarization-jobs/", json=data)
+    response.raise_for_status()
+    return response.json()
+
+def process_transcription_job(job_id: str) -> bool:
     """
     Process a transcription job.
     
     Args:
-        job: The transcription job to process
-        db: Database session
+        job_id: The ID of the transcription job to process
         
     Returns:
         True if the job was processed successfully, False otherwise
@@ -59,16 +110,18 @@ def process_transcription_job(job: TranscriptionJob, db: Session) -> bool:
     start_time = time.time()
     
     try:
-        # Mark job as started
-        mark_job_started(job, db)
+        # Get job details
+        job = get_job_from_api(job_id)
+        video_id = job["video_id"]
         
-        # Get video
-        video = db.query(Video).filter(Video.id == job.video_id).first()
-        if not video:
-            raise ValueError(f"Video {job.video_id} not found")
+        # Mark job as started
+        mark_job_started_api(job_id)
+        
+        # Get video details
+        video = get_video_from_api(video_id)
         
         # Get video file path
-        filepath = os.path.join("/app/data/videos", video.filename)
+        filepath = os.path.join("/app/data/videos", video["filename"])
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Video file not found: {filepath}")
         
@@ -76,28 +129,19 @@ def process_transcription_job(job: TranscriptionJob, db: Session) -> bool:
         whisper_model = load_whisper_model()
         
         # Transcribe video
-        logger.info(f"Transcribing video: {video.filename}")
+        logger.info(f"Transcribing video: {video['filename']}")
         result = whisper_model.transcribe(filepath, verbose=False)
         transcript_text = result["text"]
         logger.info(f"Transcription completed, length: {len(transcript_text)} characters")
         
-        # Create transcript
-        transcript = Transcript(
-            video_id=video.id,
-            source_type="video",
-            content=transcript_text,
-            format="txt",
-            status="completed"
-        )
-        db.add(transcript)
-        db.commit()
-        db.refresh(transcript)
+        # Create transcript via API
+        transcript = create_transcript_api(video_id, transcript_text)
         
         # Save SRT if available
         if "segments" in result:
             # Save SRT to file system
             os.makedirs("/app/data/transcriptions", exist_ok=True)
-            basename = os.path.splitext(video.filename)[0]
+            basename = os.path.splitext(video["filename"])[0]
             srt_path = os.path.join("/app/data/transcriptions", f"{basename}.srt")
             with open(srt_path, "w", encoding="utf-8") as f:
                 for i, seg in enumerate(result["segments"]):
@@ -113,21 +157,20 @@ def process_transcription_job(job: TranscriptionJob, db: Session) -> bool:
             logger.info(f"Transcript saved to: {txt_path}")
         
         # Update video status
-        video.status = "transcribed"
-        db.commit()
+        update_video_status_api(video_id, "transcribed")
         
         # Create summarization job
-        create_summarization_job(transcript.id, db)
+        create_summarization_job_api(transcript["id"])
         
         # Mark job as completed
         processing_time = time.time() - start_time
-        mark_job_completed(job, processing_time, db)
+        mark_job_completed_api(job_id, processing_time)
         
-        logger.info(f"Transcription completed for video {video.filename} in {processing_time:.2f} seconds")
+        logger.info(f"Transcription completed for video {video['filename']} in {processing_time:.2f} seconds")
         return True
         
     except Exception as e:
-        logger.error(f"Error processing transcription job {job.id}: {str(e)}")
+        logger.error(f"Error processing transcription job {job_id}: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
         
         # Mark job as failed
@@ -135,14 +178,32 @@ def process_transcription_job(job: TranscriptionJob, db: Session) -> bool:
             "error": str(e),
             "traceback": traceback.format_exc()
         }
-        mark_job_failed(job, error_details, db)
+        try:
+            mark_job_failed_api(job_id, error_details)
+        except Exception as mark_error:
+            logger.error(f"Error marking job as failed: {str(mark_error)}")
         
         # Update video status if it exists
-        if 'video' in locals():
-            video.status = "error"
-            db.commit()
+        if 'video_id' in locals() and 'video' in locals():
+            try:
+                update_video_status_api(video_id, "error")
+            except Exception as update_error:
+                logger.error(f"Error updating video status: {str(update_error)}")
         
         return False
+
+def get_next_transcription_job_api():
+    """Get the next pending transcription job from the API."""
+    try:
+        response = requests.get(f"{API_URL}/transcription-jobs/next")
+        if response.status_code == 404:
+            # No pending jobs
+            return None
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error getting next transcription job: {str(e)}")
+        return None
 
 def start_worker(poll_interval: int = 5):
     """
@@ -158,16 +219,14 @@ def start_worker(poll_interval: int = 5):
     
     while True:
         try:
-            # Get database session
-            with get_db() as db:
-                # Get next job
-                job = get_next_transcription_job(db)
-                
-                if job:
-                    logger.info(f"Processing transcription job {job.id} for video {job.video_id}")
-                    process_transcription_job(job, db)
-                else:
-                    logger.debug("No pending transcription jobs")
+            # Get next job from API
+            job = get_next_transcription_job_api()
+            
+            if job:
+                logger.info(f"Processing transcription job {job['id']} for video {job['video_id']}")
+                process_transcription_job(job['id'])
+            else:
+                logger.debug("No pending transcription jobs")
             
             # Wait before checking for new jobs
             time.sleep(poll_interval)

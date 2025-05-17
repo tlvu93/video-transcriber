@@ -7,13 +7,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install common package
-COPY common /app/common
-RUN pip install -e /app/common
-
-# Install API service
+# Copy API service
 COPY api-service /app/api-service
-RUN pip install -e /app/api-service
+
+# Install required packages
+RUN pip install fastapi uvicorn sqlalchemy pydantic psycopg2-binary python-multipart
 
 # Create necessary directories
 RUN mkdir -p /app/data/videos /app/data/transcriptions /app/data/summaries /app/data/db

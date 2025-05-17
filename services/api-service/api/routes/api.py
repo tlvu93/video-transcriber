@@ -2,6 +2,7 @@ import os
 import logging
 import shutil
 import hashlib
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, BackgroundTasks, Body
 from fastapi.responses import FileResponse
@@ -9,8 +10,12 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from api.database import get_db
-from api.models import Video, Transcript, Summary
-from api.job_queue import create_transcription_job
+from api.models import Video, Transcript, Summary, TranscriptionJob, SummarizationJob
+from api.job_queue import (
+    create_transcription_job, create_summarization_job,
+    get_next_transcription_job, get_next_summarization_job,
+    mark_job_started, mark_job_completed, mark_job_failed
+)
 from api.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR
 
 # Configure logging
@@ -54,6 +59,65 @@ class TranscriptionJobResponse(BaseModel):
     video_id: str
     status: str
     created_at: Any
+    started_at: Optional[Any] = None
+    completed_at: Optional[Any] = None
+    processing_time_seconds: Optional[float] = None
+    error_details: Optional[Dict[str, Any]] = None
+
+class TranscriptionJobUpdate(BaseModel):
+    status: Optional[str] = None
+    processing_time_seconds: Optional[float] = None
+    error_details: Optional[Dict[str, Any]] = None
+
+class SummarizationJobCreate(BaseModel):
+    transcript_id: str
+
+class SummarizationJobResponse(BaseModel):
+    id: str
+    transcript_id: str
+    status: str
+    created_at: Any
+    started_at: Optional[Any] = None
+    completed_at: Optional[Any] = None
+    processing_time_seconds: Optional[float] = None
+    error_details: Optional[Dict[str, Any]] = None
+
+class SummarizationJobUpdate(BaseModel):
+    status: Optional[str] = None
+    processing_time_seconds: Optional[float] = None
+    error_details: Optional[Dict[str, Any]] = None
+
+class SummaryCreate(BaseModel):
+    transcript_id: str
+    content: str
+    status: str = "completed"
+
+class SummaryResponse(BaseModel):
+    id: str
+    transcript_id: str
+    content: str
+    status: str
+    created_at: Any
+
+class TranscriptCreate(BaseModel):
+    video_id: str
+    source_type: str = "video"
+    content: str
+    format: str = "txt"
+    status: str = "completed"
+
+class TranscriptResponse(BaseModel):
+    id: str
+    video_id: str
+    source_type: str
+    content: str
+    format: str
+    status: str
+    created_at: Any
+
+class VideoUpdate(BaseModel):
+    status: Optional[str] = None
+    video_metadata: Optional[Dict[str, Any]] = None
 
 @app.get("/")
 def read_root():
@@ -135,7 +199,14 @@ async def register_video(
         existing_video.status = "pending"
         db.commit()
         db.refresh(existing_video)
-        return existing_video
+        return {
+            "id": str(existing_video.id),
+            "filename": existing_video.filename,
+            "status": existing_video.status,
+            "created_at": existing_video.created_at,
+            "file_hash": existing_video.file_hash,
+            "video_metadata": existing_video.video_metadata
+        }
     
     # Check if a video with the same file_hash exists
     if video_data.file_hash:
@@ -143,7 +214,14 @@ async def register_video(
         
         if existing_video_by_hash:
             logger.info(f"Video with hash {video_data.file_hash} already exists in the database as {existing_video_by_hash.filename}")
-            return existing_video_by_hash
+            return {
+                "id": str(existing_video_by_hash.id),
+                "filename": existing_video_by_hash.filename,
+                "status": existing_video_by_hash.status,
+                "created_at": existing_video_by_hash.created_at,
+                "file_hash": existing_video_by_hash.file_hash,
+                "video_metadata": existing_video_by_hash.video_metadata
+            }
     
     # Create a new video record
     video = Video(
@@ -159,7 +237,14 @@ async def register_video(
     
     logger.info(f"Added video {video_data.filename} to the database with ID: {video.id}")
     
-    return video
+    return {
+        "id": str(video.id),
+        "filename": video.filename,
+        "status": video.status,
+        "created_at": video.created_at,
+        "file_hash": video.file_hash,
+        "video_metadata": video.video_metadata
+    }
 
 @app.post("/videos/check", response_model=Optional[VideoResponse])
 async def check_video_exists(
@@ -184,7 +269,14 @@ async def check_video_exists(
     
     if existing_video:
         logger.info(f"Video {video_check.filename} found in the database")
-        return existing_video
+        return {
+            "id": str(existing_video.id),
+            "filename": existing_video.filename,
+            "status": existing_video.status,
+            "created_at": existing_video.created_at,
+            "file_hash": existing_video.file_hash,
+            "video_metadata": existing_video.video_metadata
+        }
     
     # Check if a video with the same file_hash exists
     if video_check.file_hash:
@@ -192,7 +284,14 @@ async def check_video_exists(
         
         if existing_video_by_hash:
             logger.info(f"Video with hash {video_check.file_hash} found in the database as {existing_video_by_hash.filename}")
-            return existing_video_by_hash
+            return {
+                "id": str(existing_video_by_hash.id),
+                "filename": existing_video_by_hash.filename,
+                "status": existing_video_by_hash.status,
+                "created_at": existing_video_by_hash.created_at,
+                "file_hash": existing_video_by_hash.file_hash,
+                "video_metadata": existing_video_by_hash.video_metadata
+            }
     
     logger.info(f"Video {video_check.filename} not found in the database")
     return None
@@ -224,6 +323,384 @@ async def create_transcription_job_endpoint(
     job = create_transcription_job(job_data.video_id, db)
     
     return job
+
+@app.get("/transcription-jobs/next", response_model=Optional[TranscriptionJobResponse])
+async def get_next_transcription_job_endpoint(db: Session = Depends(get_db)):
+    """
+    Get the next pending transcription job.
+    Used by the transcription worker.
+    
+    Args:
+        db: Database session
+        
+    Returns:
+        The next pending transcription job, or 404 if no jobs are pending
+    """
+    job = get_next_transcription_job(db)
+    if not job:
+        raise HTTPException(status_code=404, detail="No pending transcription jobs")
+    return job
+
+@app.get("/transcription-jobs/{job_id}", response_model=TranscriptionJobResponse)
+async def get_transcription_job(job_id: str, db: Session = Depends(get_db)):
+    """
+    Get a transcription job by ID.
+    
+    Args:
+        job_id: The ID of the job
+        db: Database session
+        
+    Returns:
+        The transcription job
+    """
+    job = db.query(TranscriptionJob).filter(TranscriptionJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
+    return job
+
+@app.post("/transcription-jobs/{job_id}/start", response_model=TranscriptionJobResponse)
+async def start_transcription_job(job_id: str, db: Session = Depends(get_db)):
+    """
+    Mark a transcription job as started.
+    Used by the transcription worker.
+    
+    Args:
+        job_id: The ID of the job
+        db: Database session
+        
+    Returns:
+        The updated transcription job
+    """
+    job = db.query(TranscriptionJob).filter(TranscriptionJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
+    
+    mark_job_started(job, db)
+    return job
+
+@app.post("/transcription-jobs/{job_id}/complete", response_model=TranscriptionJobResponse)
+async def complete_transcription_job(
+    job_id: str,
+    update_data: TranscriptionJobUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Mark a transcription job as completed.
+    Used by the transcription worker.
+    
+    Args:
+        job_id: The ID of the job
+        update_data: The update data
+        db: Database session
+        
+    Returns:
+        The updated transcription job
+    """
+    job = db.query(TranscriptionJob).filter(TranscriptionJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
+    
+    mark_job_completed(job, update_data.processing_time_seconds, db)
+    return job
+
+@app.post("/transcription-jobs/{job_id}/fail", response_model=TranscriptionJobResponse)
+async def fail_transcription_job(
+    job_id: str,
+    update_data: TranscriptionJobUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Mark a transcription job as failed.
+    Used by the transcription worker.
+    
+    Args:
+        job_id: The ID of the job
+        update_data: The update data
+        db: Database session
+        
+    Returns:
+        The updated transcription job
+    """
+    job = db.query(TranscriptionJob).filter(TranscriptionJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
+    
+    mark_job_failed(job, update_data.error_details, db)
+    return job
+
+@app.post("/summarization-jobs/", response_model=SummarizationJobResponse)
+async def create_summarization_job_endpoint(
+    job_data: SummarizationJobCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new summarization job.
+    Used by the transcription worker.
+    
+    Args:
+        job_data: The job data
+        db: Database session
+        
+    Returns:
+        The created summarization job
+    """
+    logger.info(f"Creating summarization job for transcript: {job_data.transcript_id}")
+    
+    # Check if the transcript exists
+    transcript = db.query(Transcript).filter(Transcript.id == job_data.transcript_id).first()
+    if not transcript:
+        raise HTTPException(status_code=404, detail=f"Transcript not found: {job_data.transcript_id}")
+    
+    # Create a summarization job
+    job = create_summarization_job(job_data.transcript_id, db)
+    
+    return job
+
+@app.get("/summarization-jobs/next", response_model=Optional[SummarizationJobResponse])
+async def get_next_summarization_job_endpoint(db: Session = Depends(get_db)):
+    """
+    Get the next pending summarization job.
+    Used by the summarization worker.
+    
+    Args:
+        db: Database session
+        
+    Returns:
+        The next pending summarization job, or 404 if no jobs are pending
+    """
+    job = get_next_summarization_job(db)
+    if not job:
+        raise HTTPException(status_code=404, detail="No pending summarization jobs")
+    return job
+
+@app.get("/summarization-jobs/{job_id}", response_model=SummarizationJobResponse)
+async def get_summarization_job(job_id: str, db: Session = Depends(get_db)):
+    """
+    Get a summarization job by ID.
+    
+    Args:
+        job_id: The ID of the job
+        db: Database session
+        
+    Returns:
+        The summarization job
+    """
+    job = db.query(SummarizationJob).filter(SummarizationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
+    return job
+
+@app.post("/summarization-jobs/{job_id}/start", response_model=SummarizationJobResponse)
+async def start_summarization_job(job_id: str, db: Session = Depends(get_db)):
+    """
+    Mark a summarization job as started.
+    Used by the summarization worker.
+    
+    Args:
+        job_id: The ID of the job
+        db: Database session
+        
+    Returns:
+        The updated summarization job
+    """
+    job = db.query(SummarizationJob).filter(SummarizationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
+    
+    mark_job_started(job, db)
+    return job
+
+@app.post("/summarization-jobs/{job_id}/complete", response_model=SummarizationJobResponse)
+async def complete_summarization_job(
+    job_id: str,
+    update_data: SummarizationJobUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Mark a summarization job as completed.
+    Used by the summarization worker.
+    
+    Args:
+        job_id: The ID of the job
+        update_data: The update data
+        db: Database session
+        
+    Returns:
+        The updated summarization job
+    """
+    job = db.query(SummarizationJob).filter(SummarizationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
+    
+    mark_job_completed(job, update_data.processing_time_seconds, db)
+    return job
+
+@app.post("/summarization-jobs/{job_id}/fail", response_model=SummarizationJobResponse)
+async def fail_summarization_job(
+    job_id: str,
+    update_data: SummarizationJobUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Mark a summarization job as failed.
+    Used by the summarization worker.
+    
+    Args:
+        job_id: The ID of the job
+        update_data: The update data
+        db: Database session
+        
+    Returns:
+        The updated summarization job
+    """
+    job = db.query(SummarizationJob).filter(SummarizationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
+    
+    mark_job_failed(job, update_data.error_details, db)
+    return job
+
+@app.post("/summaries/", response_model=SummaryResponse)
+async def create_summary(
+    summary_data: SummaryCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new summary.
+    Used by the summarization worker.
+    
+    Args:
+        summary_data: The summary data
+        db: Database session
+        
+    Returns:
+        The created summary
+    """
+    logger.info(f"Creating summary for transcript: {summary_data.transcript_id}")
+    
+    # Check if the transcript exists
+    transcript = db.query(Transcript).filter(Transcript.id == summary_data.transcript_id).first()
+    if not transcript:
+        raise HTTPException(status_code=404, detail=f"Transcript not found: {summary_data.transcript_id}")
+    
+    # Create a summary
+    summary = Summary(
+        transcript_id=summary_data.transcript_id,
+        content=summary_data.content,
+        status=summary_data.status
+    )
+    db.add(summary)
+    db.commit()
+    db.refresh(summary)
+    
+    return summary
+
+@app.patch("/transcripts/{transcript_id}", response_model=TranscriptResponse)
+async def update_transcript(
+    transcript_id: str,
+    update_data: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Update a transcript.
+    Used by the summarization worker.
+    
+    Args:
+        transcript_id: The ID of the transcript
+        update_data: The update data
+        db: Database session
+        
+    Returns:
+        The updated transcript
+    """
+    transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
+    if not transcript:
+        raise HTTPException(status_code=404, detail=f"Transcript not found: {transcript_id}")
+    
+    if "status" in update_data:
+        transcript.status = update_data["status"]
+    
+    db.commit()
+    db.refresh(transcript)
+    
+    return transcript
+
+@app.post("/transcripts/", response_model=TranscriptResponse)
+async def create_transcript(
+    transcript_data: TranscriptCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new transcript.
+    Used by the transcription worker.
+    
+    Args:
+        transcript_data: The transcript data
+        db: Database session
+        
+    Returns:
+        The created transcript
+    """
+    logger.info(f"Creating transcript for video: {transcript_data.video_id}")
+    
+    # Check if the video exists
+    video = db.query(Video).filter(Video.id == transcript_data.video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail=f"Video not found: {transcript_data.video_id}")
+    
+    # Create a transcript
+    transcript = Transcript(
+        video_id=transcript_data.video_id,
+        source_type=transcript_data.source_type,
+        content=transcript_data.content,
+        format=transcript_data.format,
+        status=transcript_data.status
+    )
+    db.add(transcript)
+    db.commit()
+    db.refresh(transcript)
+    
+    return transcript
+
+@app.patch("/videos/{video_id}", response_model=VideoResponse)
+async def update_video(
+    video_id: str,
+    update_data: VideoUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Update a video.
+    Used by the transcription worker.
+    
+    Args:
+        video_id: The ID of the video
+        update_data: The update data
+        db: Database session
+        
+    Returns:
+        The updated video
+    """
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+    
+    if update_data.status is not None:
+        video.status = update_data.status
+    
+    if update_data.video_metadata is not None:
+        video.video_metadata = update_data.video_metadata
+    
+    db.commit()
+    db.refresh(video)
+    
+    return {
+        "id": str(video.id),
+        "filename": video.filename,
+        "status": video.status,
+        "created_at": video.created_at,
+        "file_hash": video.file_hash,
+        "video_metadata": video.video_metadata
+    }
 
 @app.get("/videos/")
 def list_videos(db: Session = Depends(get_db)):

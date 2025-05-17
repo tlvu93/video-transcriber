@@ -8,12 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install common package
-COPY common /app/common
-RUN pip install -e /app/common
-
 # Install transcription service
-COPY transcription-service /app/transcription-service
+COPY services/transcription-service /app/transcription-service
 RUN pip install -e /app/transcription-service
 
 # Create necessary directories

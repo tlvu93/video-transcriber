@@ -1,11 +1,11 @@
 import argparse
 import logging
 import time
+import requests
+import traceback
 from typing import Optional
 
-from common.database import init_db, get_db
-from common.job_queue import get_next_summarization_job, mark_job_started, mark_job_completed, mark_job_failed
-
+from summarization.config import API_URL
 from summarization.worker import process_summarization_job
 
 # Configure logging
@@ -14,6 +14,38 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('summarization')
+
+def get_next_summarization_job_api():
+    """Get the next pending summarization job from the API."""
+    try:
+        response = requests.get(f"{API_URL}/summarization-jobs/next")
+        if response.status_code == 404:
+            # No pending jobs
+            return None
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error getting next summarization job: {str(e)}")
+        return None
+
+def mark_job_started_api(job_id: str) -> None:
+    """Mark job as started via API."""
+    response = requests.post(f"{API_URL}/summarization-jobs/{job_id}/start")
+    response.raise_for_status()
+    logger.info(f"Job {job_id} marked as started")
+
+def mark_job_completed_api(job_id: str, processing_time: float) -> None:
+    """Mark job as completed via API."""
+    data = {"processing_time_seconds": processing_time}
+    response = requests.post(f"{API_URL}/summarization-jobs/{job_id}/complete", json=data)
+    response.raise_for_status()
+    logger.info(f"Job {job_id} marked as completed in {processing_time:.2f} seconds")
+
+def mark_job_failed_api(job_id: str, error_details: dict) -> None:
+    """Mark job as failed via API."""
+    response = requests.post(f"{API_URL}/summarization-jobs/{job_id}/fail", json={"error_details": error_details})
+    response.raise_for_status()
+    logger.info(f"Job {job_id} marked as failed: {error_details}")
 
 def run_worker(poll_interval: int = 5):
     """
@@ -24,46 +56,41 @@ def run_worker(poll_interval: int = 5):
     """
     logger.info(f"Starting summarization worker with poll interval of {poll_interval} seconds")
     
-    # Initialize database
-    init_db()
-    
     # Main worker loop
     while True:
         try:
-            # Get a database session
-            with get_db() as db:
-                # Get the next job
-                job = get_next_summarization_job(db)
+            # Get the next job from API
+            job = get_next_summarization_job_api()
+            
+            if job:
+                logger.info(f"Processing summarization job {job['id']} for transcript {job['transcript_id']}")
                 
-                if job:
-                    logger.info(f"Processing summarization job {job.id} for transcript {job.transcript_id}")
+                try:
+                    # Mark job as started
+                    mark_job_started_api(job['id'])
                     
-                    try:
-                        # Mark job as started
-                        mark_job_started(job, db)
-                        
-                        # Process the job
-                        start_time = time.time()
-                        success, error_details = process_summarization_job(job, db)
-                        processing_time = time.time() - start_time
-                        
-                        # Mark job as completed or failed
-                        if success:
-                            mark_job_completed(job, processing_time, db)
-                            logger.info(f"Summarization job {job.id} completed in {processing_time:.2f} seconds")
-                        else:
-                            mark_job_failed(job, error_details, db)
-                            logger.error(f"Summarization job {job.id} failed: {error_details}")
+                    # Process the job
+                    start_time = time.time()
+                    success, error_details = process_summarization_job(job['id'])
+                    processing_time = time.time() - start_time
                     
-                    except Exception as e:
-                        # Mark job as failed
-                        error_details = {"error": str(e), "type": type(e).__name__}
-                        mark_job_failed(job, error_details, db)
-                        logger.exception(f"Error processing summarization job {job.id}: {str(e)}")
+                    # Mark job as completed or failed
+                    if success:
+                        mark_job_completed_api(job['id'], processing_time)
+                        logger.info(f"Summarization job {job['id']} completed in {processing_time:.2f} seconds")
+                    else:
+                        mark_job_failed_api(job['id'], error_details)
+                        logger.error(f"Summarization job {job['id']} failed: {error_details}")
                 
-                else:
-                    # No jobs to process, wait for poll_interval seconds
-                    logger.debug(f"No summarization jobs to process, waiting {poll_interval} seconds")
+                except Exception as e:
+                    # Mark job as failed
+                    error_details = {"error": str(e), "type": type(e).__name__}
+                    mark_job_failed_api(job['id'], error_details)
+                    logger.exception(f"Error processing summarization job {job['id']}: {str(e)}")
+            
+            else:
+                # No jobs to process, wait for poll_interval seconds
+                logger.debug(f"No summarization jobs to process, waiting {poll_interval} seconds")
             
             # Sleep for poll_interval seconds
             time.sleep(poll_interval)

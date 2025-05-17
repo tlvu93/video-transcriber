@@ -2,11 +2,10 @@ import os
 import logging
 import subprocess
 import time
+import requests
 from typing import Dict, Any, Tuple, Optional
-from sqlalchemy.orm import Session
 
-from common.models import TranscriptionJob, Video, Transcript
-from common.config import VIDEO_DIR, TRANSCRIPT_DIR
+from transcription.config import VIDEO_DIR, TRANSCRIPT_DIR, API_URL
 
 # Configure logging
 logging.basicConfig(
@@ -15,30 +14,61 @@ logging.basicConfig(
 )
 logger = logging.getLogger('transcription.worker')
 
-def process_transcription_job(job: TranscriptionJob, db: Session) -> Tuple[bool, Optional[Dict[str, Any]]]:
+def get_video_from_api(video_id: str) -> Dict[str, Any]:
+    """Get video details from API."""
+    response = requests.get(f"{API_URL}/videos/{video_id}")
+    response.raise_for_status()
+    return response.json()
+
+def create_transcript_api(video_id: str, content: str, format: str = "txt") -> Dict[str, Any]:
+    """Create transcript via API."""
+    data = {
+        "video_id": video_id,
+        "source_type": "video",
+        "content": content,
+        "format": format,
+        "status": "completed"
+    }
+    response = requests.post(f"{API_URL}/transcripts/", json=data)
+    response.raise_for_status()
+    return response.json()
+
+def update_video_status_api(video_id: str, status: str) -> None:
+    """Update video status via API."""
+    data = {"status": status}
+    response = requests.patch(f"{API_URL}/videos/{video_id}", json=data)
+    response.raise_for_status()
+    logger.info(f"Video {video_id} status updated to {status}")
+
+def process_transcription_job(job_id: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
     """
     Process a transcription job.
     
     Args:
-        job: The transcription job to process
-        db: Database session
+        job_id: The ID of the transcription job to process
         
     Returns:
         Tuple of (success, error_details)
     """
     try:
-        # Get the video
-        video = db.query(Video).filter(Video.id == job.video_id).first()
+        # Get job details from API
+        response = requests.get(f"{API_URL}/transcription-jobs/{job_id}")
+        response.raise_for_status()
+        job = response.json()
+        video_id = job["video_id"]
+        
+        # Get the video from API
+        video = get_video_from_api(video_id)
         if not video:
-            return False, {"error": f"Video not found: {job.video_id}"}
+            return False, {"error": f"Video not found: {video_id}"}
         
         # Get the video file path
-        video_path = os.path.join(VIDEO_DIR, video.filename)
+        video_path = os.path.join(VIDEO_DIR, video["filename"])
         if not os.path.exists(video_path):
             return False, {"error": f"Video file not found: {video_path}"}
         
         # Create transcript file path
-        transcript_filename = f"{os.path.splitext(video.filename)[0]}.txt"
+        transcript_filename = f"{os.path.splitext(video['filename'])[0]}.txt"
         transcript_path = os.path.join(TRANSCRIPT_DIR, transcript_filename)
         
         # Ensure transcript directory exists
@@ -60,20 +90,16 @@ def process_transcription_job(job: TranscriptionJob, db: Session) -> Tuple[bool,
         with open(transcript_path, "w", encoding="utf-8") as f:
             f.write(transcript_text)
         
-        # Create transcript record
-        transcript = Transcript(
-            video_id=video.id,
-            source_type="video",
-            content=transcript_text,
-            format="txt",
-            status="completed"
-        )
-        db.add(transcript)
-        db.commit()
+        # Create transcript record via API
+        transcript = create_transcript_api(video_id, transcript_text)
         
-        # Update video status
-        video.status = "transcribed"
-        db.commit()
+        # Update video status via API
+        update_video_status_api(video_id, "transcribed")
+        
+        # Create summarization job via API
+        data = {"transcript_id": transcript["id"]}
+        response = requests.post(f"{API_URL}/summarization-jobs/", json=data)
+        response.raise_for_status()
         
         return True, None
         

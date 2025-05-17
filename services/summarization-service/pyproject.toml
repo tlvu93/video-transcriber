@@ -12,7 +12,8 @@ license = {text = "MIT"}
 dependencies = [
     "requests>=2.26.0",
     "nltk>=3.6.0",
-    "common @ file://../common",
+    "langchain>=0.0.267",
+    "langchain-core>=0.1.0",
 ]
 
 [project.optional-dependencies]

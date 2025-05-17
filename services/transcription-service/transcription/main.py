@@ -1,12 +1,12 @@
 import argparse
 import logging
 import time
+import requests
+import traceback
 from typing import Optional
 
-from common.database import init_db, get_db
-from common.job_queue import get_next_transcription_job, mark_job_started, mark_job_completed, mark_job_failed
-
-from transcription.worker import process_transcription_job
+from transcription.config import API_URL
+from transcription.transcription_worker import process_transcription_job
 
 # Configure logging
 logging.basicConfig(
@@ -14,6 +14,19 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('transcription')
+
+def get_next_transcription_job_api():
+    """Get the next pending transcription job from the API."""
+    try:
+        response = requests.get(f"{API_URL}/transcription-jobs/next")
+        if response.status_code == 404:
+            # No pending jobs
+            return None
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error getting next transcription job: {str(e)}")
+        return None
 
 def run_worker(poll_interval: int = 5):
     """
@@ -24,52 +37,37 @@ def run_worker(poll_interval: int = 5):
     """
     logger.info(f"Starting transcription worker with poll interval of {poll_interval} seconds")
     
-    # Initialize database
-    init_db()
-    
     # Main worker loop
     while True:
         try:
-            # Get a database session
-            with get_db() as db:
-                # Get the next job
-                job = get_next_transcription_job(db)
+            # Get the next job from API
+            job = get_next_transcription_job_api()
+            
+            if job:
+                logger.info(f"Processing transcription job {job['id']} for video {job['video_id']}")
                 
-                if job:
-                    logger.info(f"Processing transcription job {job.id} for video {job.video_id}")
+                try:
+                    # Process the job
+                    success = process_transcription_job(job['id'])
                     
-                    try:
-                        # Mark job as started
-                        mark_job_started(job, db)
-                        
-                        # Process the job
-                        start_time = time.time()
-                        success, error_details = process_transcription_job(job, db)
-                        processing_time = time.time() - start_time
-                        
-                        # Mark job as completed or failed
-                        if success:
-                            mark_job_completed(job, processing_time, db)
-                            logger.info(f"Transcription job {job.id} completed in {processing_time:.2f} seconds")
-                        else:
-                            mark_job_failed(job, error_details, db)
-                            logger.error(f"Transcription job {job.id} failed: {error_details}")
-                    
-                    except Exception as e:
-                        # Mark job as failed
-                        error_details = {"error": str(e), "type": type(e).__name__}
-                        mark_job_failed(job, error_details, db)
-                        logger.exception(f"Error processing transcription job {job.id}: {str(e)}")
+                    if success:
+                        logger.info(f"Transcription job {job['id']} completed successfully")
+                    else:
+                        logger.error(f"Transcription job {job['id']} failed")
                 
-                else:
-                    # No jobs to process, wait for poll_interval seconds
-                    logger.debug(f"No transcription jobs to process, waiting {poll_interval} seconds")
+                except Exception as e:
+                    logger.exception(f"Error processing transcription job {job['id']}: {str(e)}")
+            
+            else:
+                # No jobs to process, wait for poll_interval seconds
+                logger.debug(f"No transcription jobs to process, waiting {poll_interval} seconds")
             
             # Sleep for poll_interval seconds
             time.sleep(poll_interval)
             
         except Exception as e:
             logger.exception(f"Error in worker loop: {str(e)}")
+            logger.error(f"Exception traceback: {traceback.format_exc()}")
             time.sleep(poll_interval)  # Sleep and try again
 
 if __name__ == "__main__":

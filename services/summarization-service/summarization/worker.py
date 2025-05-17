@@ -1,12 +1,11 @@
 import os
 import logging
 import time
+import requests
+import traceback
 from typing import Dict, Any, Tuple, Optional
-from sqlalchemy.orm import Session
 
-from common.models import SummarizationJob, Transcript, Summary, Video
-from common.config import TRANSCRIPT_DIR, SUMMARY_DIR
-
+from summarization.config import TRANSCRIPT_DIR, SUMMARY_DIR, API_URL
 from summarization.summarizer import create_summary
 
 # Configure logging
@@ -16,36 +15,75 @@ logging.basicConfig(
 )
 logger = logging.getLogger('summarization.worker')
 
-def process_summarization_job(job: SummarizationJob, db: Session) -> Tuple[bool, Optional[Dict[str, Any]]]:
+def get_job_from_api(job_id: str) -> Dict[str, Any]:
+    """Get job details from API."""
+    response = requests.get(f"{API_URL}/summarization-jobs/{job_id}")
+    response.raise_for_status()
+    return response.json()
+
+def get_transcript_from_api(transcript_id: str) -> Dict[str, Any]:
+    """Get transcript details from API."""
+    response = requests.get(f"{API_URL}/transcripts/{transcript_id}")
+    response.raise_for_status()
+    return response.json()
+
+def get_video_from_api(video_id: str) -> Dict[str, Any]:
+    """Get video details from API."""
+    response = requests.get(f"{API_URL}/videos/{video_id}")
+    response.raise_for_status()
+    return response.json()
+
+def create_summary_api(transcript_id: str, content: str) -> Dict[str, Any]:
+    """Create summary via API."""
+    data = {
+        "transcript_id": transcript_id,
+        "content": content,
+        "status": "completed"
+    }
+    response = requests.post(f"{API_URL}/summaries/", json=data)
+    response.raise_for_status()
+    return response.json()
+
+def update_transcript_status_api(transcript_id: str, status: str) -> None:
+    """Update transcript status via API."""
+    data = {"status": status}
+    response = requests.patch(f"{API_URL}/transcripts/{transcript_id}", json=data)
+    response.raise_for_status()
+    logger.info(f"Transcript {transcript_id} status updated to {status}")
+
+def process_summarization_job(job_id: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
     """
     Process a summarization job.
     
     Args:
-        job: The summarization job to process
-        db: Database session
+        job_id: The ID of the summarization job to process
         
     Returns:
         Tuple of (success, error_details)
     """
     try:
-        # Get the transcript
-        transcript = db.query(Transcript).filter(Transcript.id == job.transcript_id).first()
+        # Get job details from API
+        job = get_job_from_api(job_id)
+        transcript_id = job["transcript_id"]
+        
+        # Get the transcript from API
+        transcript = get_transcript_from_api(transcript_id)
         if not transcript:
-            return False, {"error": f"Transcript not found: {job.transcript_id}"}
+            return False, {"error": f"Transcript not found: {transcript_id}"}
         
         # Get the transcript content
-        transcript_content = transcript.content
+        transcript_content = transcript["content"]
         
         # Create summary file path
-        if transcript.video_id:
+        if transcript["video_id"]:
             # Get the video filename
-            video = db.query(Video).filter(Video.id == transcript.video_id).first()
+            video = get_video_from_api(transcript["video_id"])
             if video:
-                summary_filename = f"{os.path.splitext(video.filename)[0]}_summary.txt"
+                summary_filename = f"{os.path.splitext(video['filename'])[0]}_summary.txt"
             else:
-                summary_filename = f"transcript_{transcript.id}_summary.txt"
+                summary_filename = f"transcript_{transcript_id}_summary.txt"
         else:
-            summary_filename = f"transcript_{transcript.id}_summary.txt"
+            summary_filename = f"transcript_{transcript_id}_summary.txt"
         
         summary_path = os.path.join(SUMMARY_DIR, summary_filename)
         
@@ -53,7 +91,7 @@ def process_summarization_job(job: SummarizationJob, db: Session) -> Tuple[bool,
         os.makedirs(SUMMARY_DIR, exist_ok=True)
         
         # Generate summary
-        logger.info(f"Generating summary for transcript: {transcript.id}")
+        logger.info(f"Generating summary for transcript: {transcript_id}")
         # Pass a placeholder for video_path since we don't have the actual path
         summary_text = create_summary(transcript_content, "manual_transcript")
         
@@ -61,18 +99,11 @@ def process_summarization_job(job: SummarizationJob, db: Session) -> Tuple[bool,
         with open(summary_path, "w", encoding="utf-8") as f:
             f.write(summary_text)
         
-        # Create summary record
-        summary = Summary(
-            transcript_id=transcript.id,
-            content=summary_text,
-            status="completed"
-        )
-        db.add(summary)
-        db.commit()
+        # Create summary record via API
+        create_summary_api(transcript_id, summary_text)
         
-        # Update transcript status
-        transcript.status = "summarized"
-        db.commit()
+        # Update transcript status via API
+        update_transcript_status_api(transcript_id, "summarized")
         
         return True, None
         

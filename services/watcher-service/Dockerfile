@@ -7,10 +7,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install common package
-COPY common /app/common
-RUN pip install -e /app/common
-
 # Copy API service (needed by watcher)
 COPY api-service /app/api-service
 

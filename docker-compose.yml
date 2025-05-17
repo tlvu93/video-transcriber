@@ -24,13 +24,13 @@ services:
   api:
     build:
       context: .
-      dockerfile: api-service/Dockerfile
+      dockerfile: services/api-service/Dockerfile
     volumes:
       - ./data:/app/data
       - ./common:/app/common
-      - ./api-service:/app/api-service
-      - ./transcription-service:/app/transcription-service
-      - ./summarization-service:/app/summarization-service
+      - ./services/api-service:/app/api-service
+      - ./services/transcription-service:/app/transcription-service
+      - ./services/summarization-service:/app/summarization-service
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,18 +56,16 @@ services:
   transcription-worker:
     build:
       context: .
-      dockerfile: transcription-service/Dockerfile
+      dockerfile: services/transcription-service/Dockerfile
     volumes:
       - ./data:/app/data
-      - ./common:/app/common
-      - ./transcription-service:/app/transcription-service
+      - ./services/transcription-service:/app/transcription-service
     depends_on:
       postgres:
         condition: service_healthy
       api:
         condition: service_started
     environment:
-      - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
       - API_URL=http://api:8000
       - PYTHONUNBUFFERED=1
     command: ["python", "-m", "transcription.main"]
@@ -82,11 +80,11 @@ services:
   summarization-worker:
     build:
       context: .
-      dockerfile: summarization-service/Dockerfile
+      dockerfile: services/summarization-service/Dockerfile
     volumes:
       - ./data:/app/data
       - ./common:/app/common
-      - ./summarization-service:/app/summarization-service
+      - ./services/summarization-service:/app/summarization-service
     depends_on:
       postgres:
         condition: service_healthy
@@ -133,12 +131,12 @@ services:
   watcher:
     build:
       context: .
-      dockerfile: watcher-service/Dockerfile
+      dockerfile: services/watcher-service/Dockerfile
     volumes:
       - ./data:/app/data
       - ./common:/app/common
-      - ./api-service:/app/api-service
-      - ./watcher-service:/app/watcher-service
+      - ./services/api-service:/app/api-service
+      - ./services/watcher-service:/app/watcher-service
     depends_on:
       postgres:
         condition: service_healthy

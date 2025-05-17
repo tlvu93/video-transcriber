@@ -31,7 +31,6 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables created successfully")
 
-@contextmanager
 def get_db():
     """Get a database session."""
     db = SessionLocal()
@@ -45,11 +44,14 @@ def migrate_from_json_to_db():
     from api.models import Video, Transcript, Summary
     
     # Check if migration is needed
-    with get_db() as db:
+    db = next(get_db())
+    try:
         # If there are already videos in the database, skip migration
         if db.query(Video).count() > 0:
             logger.info("Database already contains data, skipping migration")
             return
+    finally:
+        db.close()
     
     # Paths to JSON files
     videos_json = os.path.join(os.path.dirname(DB_PATH), "videos.json")
@@ -69,7 +71,8 @@ def migrate_from_json_to_db():
             with open(videos_json, "r") as f:
                 videos_data = json.load(f)
             
-            with get_db() as db:
+            db = next(get_db())
+            try:
                 for video_data in videos_data:
                     video = Video(
                         id=video_data.get("id"),
@@ -80,6 +83,8 @@ def migrate_from_json_to_db():
                     )
                     db.add(video)
                 db.commit()
+            finally:
+                db.close()
             
             logger.info(f"Migrated {len(videos_data)} videos from JSON to database")
         except Exception as e:
@@ -91,7 +96,8 @@ def migrate_from_json_to_db():
             with open(transcripts_json, "r") as f:
                 transcripts_data = json.load(f)
             
-            with get_db() as db:
+            db = next(get_db())
+            try:
                 for transcript_data in transcripts_data:
                     transcript = Transcript(
                         id=transcript_data.get("id"),
@@ -104,6 +110,8 @@ def migrate_from_json_to_db():
                     )
                     db.add(transcript)
                 db.commit()
+            finally:
+                db.close()
             
             logger.info(f"Migrated {len(transcripts_data)} transcripts from JSON to database")
         except Exception as e:
@@ -115,7 +123,8 @@ def migrate_from_json_to_db():
             with open(summaries_json, "r") as f:
                 summaries_data = json.load(f)
             
-            with get_db() as db:
+            db = next(get_db())
+            try:
                 for summary_data in summaries_data:
                     summary = Summary(
                         id=summary_data.get("id"),
@@ -126,6 +135,8 @@ def migrate_from_json_to_db():
                     )
                     db.add(summary)
                 db.commit()
+            finally:
+                db.close()
             
             logger.info(f"Migrated {len(summaries_data)} summaries from JSON to database")
         except Exception as e:
