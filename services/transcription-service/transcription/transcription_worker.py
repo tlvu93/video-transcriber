@@ -72,13 +72,25 @@ def mark_job_failed_api(job_id: str, error_details: Dict[str, Any]) -> None:
 
 def create_transcript_api(video_id: str, content: str, segments: Optional[List[Dict[str, Any]]] = None, format: str = "txt") -> Dict[str, Any]:
     """Create transcript via API."""
+    # Format segments for database storage if they exist
+    formatted_segments = None
+    if segments:
+        formatted_segments = []
+        for i, seg in enumerate(segments):
+            formatted_segments.append({
+                "id": i + 1,
+                "start_time": seg["start"],
+                "end_time": seg["end"],
+                "text": seg["text"].strip()
+            })
+    
     data = {
         "video_id": video_id,
         "source_type": "video",
         "content": content,
         "format": format,
         "status": "completed",
-        "segments": segments
+        "segments": formatted_segments
     }
     response = requests.post(f"{API_URL}/transcripts/", json=data)
     response.raise_for_status()
@@ -137,7 +149,7 @@ def process_transcription_job(job_id: str) -> bool:
         
         # Create transcript via API
         segments = result.get("segments", None)
-        transcript = create_transcript_api(video_id, transcript_text, segments)
+        transcript = create_transcript_api(video_id, transcript_text, segments, "srt")
         
         # Save SRT if available
         if "segments" in result:
