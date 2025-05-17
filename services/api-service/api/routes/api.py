@@ -430,6 +430,40 @@ async def fail_transcription_job(
     mark_job_failed(job, update_data.error_details, db)
     return job
 
+@app.post("/transcription-jobs/{job_id}/retry", response_model=TranscriptionJobResponse)
+async def retry_transcription_job(
+    job_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Retry a failed transcription job by setting its status back to pending.
+    
+    Args:
+        job_id: The ID of the job to retry
+        db: Database session
+        
+    Returns:
+        The updated transcription job
+    """
+    job = db.query(TranscriptionJob).filter(TranscriptionJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
+    
+    if job.status != "failed":
+        raise HTTPException(status_code=400, detail=f"Job {job_id} is not in failed status, current status: {job.status}")
+    
+    # Reset job status to pending
+    job.status = "pending"
+    job.started_at = None
+    job.completed_at = None
+    job.processing_time_seconds = None
+    job.error_details = None
+    db.commit()
+    db.refresh(job)
+    
+    logger.info(f"Transcription job {job_id} has been reset to pending status for retry")
+    return job
+
 @app.post("/summarization-jobs/", response_model=SummarizationJobResponse)
 async def create_summarization_job_endpoint(
     job_data: SummarizationJobCreate,

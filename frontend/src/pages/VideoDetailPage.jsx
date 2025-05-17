@@ -4,6 +4,7 @@ import VideoPlayer from "../components/VideoPlayer";
 import VideoMetadata from "../components/VideoMetadata";
 import TranscriptList from "../components/TranscriptList";
 import VideoSummary from "../components/VideoSummary";
+import TranscriptionJobStatus from "../components/TranscriptionJobStatus";
 import { fetchVideoById, fetchTranscriptsByVideoId } from "../api/videoService";
 
 const VideoDetailPage = () => {
@@ -121,7 +122,91 @@ const VideoDetailPage = () => {
             onTimeUpdate={handleTimeUpdate}
           />
           <div className="mt-4">
-            <VideoMetadata video={video} />
+            <VideoMetadata
+              video={video}
+              onRetryTranscription={async () => {
+                try {
+                  // Create a new transcription job for the video
+                  const response = await fetch(`/api/transcription-jobs/`, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ video_id: id }),
+                  });
+
+                  if (!response.ok) {
+                    throw new Error("Failed to create new transcription job");
+                  }
+
+                  // Update the video status to pending
+                  await fetch(`/api/videos/${id}`, {
+                    method: "PATCH",
+                    headers: {
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ status: "pending" }),
+                  });
+
+                  // Refresh the page data
+                  setLoading(true);
+                  const videoData = await fetchVideoById(id);
+                  setVideo(videoData);
+                  setLoading(false);
+
+                  return true;
+                } catch (error) {
+                  console.error("Error retrying transcription:", error);
+                  throw error;
+                }
+              }}
+            />
+            <TranscriptionJobStatus
+              videoId={id}
+              onJobRetried={() => {
+                // Refresh the page data when a job is retried
+                setLoading(true);
+                fetchVideoById(id)
+                  .then((videoData) => {
+                    setVideo(videoData);
+                    return fetchTranscriptsByVideoId(id);
+                  })
+                  .then((transcripts) => {
+                    if (transcripts && transcripts.length > 0) {
+                      const transcript = transcripts[0];
+
+                      // Process transcript segments
+                      if (!transcript.segments) {
+                        transcript.segments = [];
+                        if (transcript.content) {
+                          transcript.segments.push({
+                            id: 1,
+                            start_time: 0,
+                            end_time: 0,
+                            text: transcript.content,
+                          });
+                        }
+                      } else {
+                        transcript.segments = transcript.segments.map(
+                          (seg, index) => ({
+                            id: seg.id || index + 1,
+                            start_time: seg.start_time || 0,
+                            end_time: seg.end_time || 0,
+                            text: seg.text || "",
+                          })
+                        );
+                      }
+
+                      setTranscript(transcript);
+                    }
+                    setLoading(false);
+                  })
+                  .catch((err) => {
+                    console.error("Error refreshing data:", err);
+                    setLoading(false);
+                  });
+              }}
+            />
             {transcript && <VideoSummary transcript={transcript} />}
           </div>
         </div>
