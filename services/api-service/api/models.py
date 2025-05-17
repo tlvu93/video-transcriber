@@ -35,6 +35,7 @@ class Transcript(Base):
     format = Column(String, default="txt")  # txt, srt
     status = Column(String, default="pending")  # pending, completed, summarized, error
     created_at = Column(DateTime, default=datetime.utcnow)
+    segments = Column(JSON, nullable=True)  # Store timestamp segments as JSON
     
     video = relationship("Video", back_populates="transcripts")
     summaries = relationship("Summary", back_populates="transcript")

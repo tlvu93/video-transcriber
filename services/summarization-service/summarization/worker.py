@@ -74,36 +74,31 @@ def process_summarization_job(job_id: str) -> Tuple[bool, Optional[Dict[str, Any
         # Get the transcript content
         transcript_content = transcript["content"]
         
-        # Create summary file path
-        if transcript["video_id"]:
-            # Get the video filename
-            video = get_video_from_api(transcript["video_id"])
-            if video:
-                summary_filename = f"{os.path.splitext(video['filename'])[0]}_summary.txt"
-            else:
-                summary_filename = f"transcript_{transcript_id}_summary.txt"
-        else:
-            summary_filename = f"transcript_{transcript_id}_summary.txt"
-        
-        summary_path = os.path.join(SUMMARY_DIR, summary_filename)
-        
-        # Ensure summary directory exists
-        os.makedirs(SUMMARY_DIR, exist_ok=True)
-        
         # Generate summary
         logger.info(f"Generating summary for transcript: {transcript_id}")
-        # Pass a placeholder for video_path since we don't have the actual path
         summary_text = create_summary(transcript_content, "manual_transcript")
-        
-        # Save summary to file
-        with open(summary_path, "w", encoding="utf-8") as f:
-            f.write(summary_text)
         
         # Create summary record via API
         create_summary_api(transcript_id, summary_text)
         
         # Update transcript status via API
         update_transcript_status_api(transcript_id, "summarized")
+        
+        # Optionally save summary to file for backward compatibility
+        if transcript["video_id"]:
+            # Get the video filename
+            video = get_video_from_api(transcript["video_id"])
+            if video:
+                summary_filename = f"{os.path.splitext(video['filename'])[0]}_summary.txt"
+                summary_path = os.path.join(SUMMARY_DIR, summary_filename)
+                
+                # Ensure summary directory exists
+                os.makedirs(SUMMARY_DIR, exist_ok=True)
+                
+                # Save summary to file
+                with open(summary_path, "w", encoding="utf-8") as f:
+                    f.write(summary_text)
+                logger.info(f"Summary saved to file: {summary_path}")
         
         return True, None
         

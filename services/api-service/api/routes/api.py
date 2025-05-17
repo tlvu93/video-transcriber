@@ -105,6 +105,7 @@ class TranscriptCreate(BaseModel):
     content: str
     format: str = "txt"
     status: str = "completed"
+    segments: Optional[List[Dict[str, Any]]] = None
 
 class TranscriptResponse(BaseModel):
     id: str
@@ -114,6 +115,7 @@ class TranscriptResponse(BaseModel):
     format: str
     status: str
     created_at: Any
+    segments: Optional[List[Dict[str, Any]]] = None
 
 class VideoUpdate(BaseModel):
     status: Optional[str] = None
@@ -654,7 +656,8 @@ async def create_transcript(
         source_type=transcript_data.source_type,
         content=transcript_data.content,
         format=transcript_data.format,
-        status=transcript_data.status
+        status=transcript_data.status,
+        segments=transcript_data.segments
     )
     db.add(transcript)
     db.commit()

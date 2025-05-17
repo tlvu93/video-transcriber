@@ -5,7 +5,7 @@ import whisper
 import traceback
 import requests
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import sys
 from pathlib import Path
@@ -70,14 +70,15 @@ def mark_job_failed_api(job_id: str, error_details: Dict[str, Any]) -> None:
     response.raise_for_status()
     logger.info(f"Job {job_id} marked as failed: {error_details}")
 
-def create_transcript_api(video_id: str, content: str, format: str = "txt") -> Dict[str, Any]:
+def create_transcript_api(video_id: str, content: str, segments: Optional[List[Dict[str, Any]]] = None, format: str = "txt") -> Dict[str, Any]:
     """Create transcript via API."""
     data = {
         "video_id": video_id,
         "source_type": "video",
         "content": content,
         "format": format,
-        "status": "completed"
+        "status": "completed",
+        "segments": segments
     }
     response = requests.post(f"{API_URL}/transcripts/", json=data)
     response.raise_for_status()
@@ -135,7 +136,8 @@ def process_transcription_job(job_id: str) -> bool:
         logger.info(f"Transcription completed, length: {len(transcript_text)} characters")
         
         # Create transcript via API
-        transcript = create_transcript_api(video_id, transcript_text)
+        segments = result.get("segments", None)
+        transcript = create_transcript_api(video_id, transcript_text, segments)
         
         # Save SRT if available
         if "segments" in result:
