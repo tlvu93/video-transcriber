@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import VideoPlayer from "../components/VideoPlayer";
 import VideoMetadata from "../components/VideoMetadata";
 import TranscriptList from "../components/TranscriptList";
+import VideoSummary from "../components/VideoSummary";
 import { fetchVideoById, fetchTranscriptsByVideoId } from "../api/videoService";
 
 const VideoDetailPage = () => {
@@ -121,6 +122,7 @@ const VideoDetailPage = () => {
           />
           <div className="mt-4">
             <VideoMetadata video={video} />
+            {transcript && <VideoSummary transcript={transcript} />}
           </div>
         </div>
         <div>

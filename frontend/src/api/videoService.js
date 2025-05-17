@@ -46,3 +46,18 @@ export const downloadTranscript = async (transcriptId) => {
     throw error;
   }
 };
+
+export const fetchSummariesByTranscriptId = async (transcriptId) => {
+  try {
+    const response = await axios.get(
+      `${API_URL}/summaries/?transcript_id=${transcriptId}`
+    );
+    return response.data;
+  } catch (error) {
+    console.error(
+      `Error fetching summaries for transcript ID ${transcriptId}:`,
+      error
+    );
+    throw error;
+  }
+};
