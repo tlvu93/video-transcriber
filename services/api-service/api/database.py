@@ -15,8 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('database')
 
-# Create database directory if it doesn't exist
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
 
 # Create SQLAlchemy engine
 engine = create_engine(DATABASE_URL)

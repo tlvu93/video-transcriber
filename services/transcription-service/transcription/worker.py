@@ -68,11 +68,7 @@ def process_transcription_job(job_id: str) -> Tuple[bool, Optional[Dict[str, Any
             return False, {"error": f"Video file not found: {video_path}"}
         
         # Create transcript file path
-        transcript_filename = f"{os.path.splitext(video['filename'])[0]}.txt"
-        transcript_path = os.path.join(TRANSCRIPT_DIR, transcript_filename)
-        
-        # Ensure transcript directory exists
-        os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
+
         
         # Extract audio from video
         logger.info(f"Extracting audio from video: {video_path}")
@@ -85,10 +81,6 @@ def process_transcription_job(job_id: str) -> Tuple[bool, Optional[Dict[str, Any
         # Clean up temporary audio file
         if os.path.exists(audio_path):
             os.remove(audio_path)
-        
-        # Save transcript to file
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            f.write(transcript_text)
         
         # Create transcript record via API
         transcript = create_transcript_api(video_id, transcript_text)

@@ -150,26 +150,7 @@ def process_transcription_job(job_id: str) -> bool:
         # Create transcript via API
         segments = result.get("segments", None)
         transcript = create_transcript_api(video_id, transcript_text, segments, "srt")
-        
-        # Save SRT if available
-        if "segments" in result:
-            # Save SRT to file system
-            os.makedirs("/app/data/transcriptions", exist_ok=True)
-            basename = os.path.splitext(video["filename"])[0]
-            srt_path = os.path.join("/app/data/transcriptions", f"{basename}.srt")
-            with open(srt_path, "w", encoding="utf-8") as f:
-                for i, seg in enumerate(result["segments"]):
-                    f.write(f"{i+1}\n")
-                    f.write(f"{format_srt_timestamp(seg['start'])} --> {format_srt_timestamp(seg['end'])}\n")
-                    f.write(f"{seg['text'].strip()}\n\n")
-            logger.info(f"SRT file saved to: {srt_path}")
-            
-            # Also save plain text transcript
-            txt_path = os.path.join("/app/data/transcriptions", f"{basename}.txt")
-            with open(txt_path, "w", encoding="utf-8") as f:
-                f.write(transcript_text)
-            logger.info(f"Transcript saved to: {txt_path}")
-        
+
         # Update video status
         update_video_status_api(video_id, "transcribed")
         

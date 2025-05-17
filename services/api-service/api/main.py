@@ -60,8 +60,6 @@ def main():
         
         # Create necessary directories
         os.makedirs("data/videos", exist_ok=True)
-        os.makedirs("data/transcriptions", exist_ok=True)
-        os.makedirs("data/summaries", exist_ok=True)
         
         # Initialize database
         logger.info("Initializing database...")

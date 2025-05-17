@@ -8,7 +8,7 @@ from pathlib import Path
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from transcription.config import TRANSCRIPT_DIR, VIDEO_DIR
+from transcription.config import VIDEO_DIR
 from transcription.utils import get_video_metadata
 from summarization_service.summarization.summarizer import create_summary
 
@@ -24,9 +24,9 @@ model = whisper.load_model("base")
 logger.info("Whisper model loaded successfully")
 
 os.makedirs(VIDEO_DIR, exist_ok=True)
-os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
+
 logger.info(f"Video directory: {VIDEO_DIR}")
-logger.info(f"Transcript directory: {TRANSCRIPT_DIR}")
+
 
 def process_video(filepath):
     logger.info(f"Processing video: {filepath}")
