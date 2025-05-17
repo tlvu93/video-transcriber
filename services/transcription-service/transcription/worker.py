@@ -5,7 +5,7 @@ import time
 import requests
 from typing import Dict, Any, Tuple, Optional
 
-from transcription.config import VIDEO_DIR, TRANSCRIPT_DIR, API_URL
+from transcription.config import VIDEO_DIR, API_URL
 
 # Configure logging
 logging.basicConfig(
@@ -66,9 +66,6 @@ def process_transcription_job(job_id: str) -> Tuple[bool, Optional[Dict[str, Any
         video_path = os.path.join(VIDEO_DIR, video["filename"])
         if not os.path.exists(video_path):
             return False, {"error": f"Video file not found: {video_path}"}
-        
-        # Create transcript file path
-
         
         # Extract audio from video
         logger.info(f"Extracting audio from video: {video_path}")

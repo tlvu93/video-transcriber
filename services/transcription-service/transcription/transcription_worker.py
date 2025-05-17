@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any, List
 import sys
 from pathlib import Path
 
-from transcription.config import VIDEO_DIR, TRANSCRIPT_DIR, API_URL
+from transcription.config import VIDEO_DIR, API_URL
 
 # Configure logging
 logging.basicConfig(

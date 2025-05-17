@@ -59,33 +59,7 @@ def process_video(filepath):
             logger.error(f"Exception traceback: {traceback.format_exc()}")
             return None, metadata, None
         
-        basename = os.path.splitext(os.path.basename(filepath))[0]
-        
-        # Save transcript
-        transcript_path = os.path.join(TRANSCRIPT_DIR, f"{basename}.txt")
-        logger.info(f"Saving transcript to: {transcript_path}")
-        try:
-            with open(transcript_path, "w", encoding="utf-8") as f:
-                f.write(transcript_text)
-            logger.info(f"📝 Transcript saved to: {transcript_path}")
-        except Exception as e:
-            logger.error(f"Error saving transcript: {str(e)}")
-            logger.error(f"Exception traceback: {traceback.format_exc()}")
-
-        # Save .srt if segments are available
-        if "segments" in result:
-            srt_path = os.path.join(TRANSCRIPT_DIR, f"{basename}.srt")
-            logger.info(f"Saving SRT file to: {srt_path}")
-            try:
-                with open(srt_path, "w", encoding="utf-8") as f:
-                    for i, seg in enumerate(result["segments"]):
-                        f.write(f"{i+1}\n")
-                        f.write(f"{format_srt_timestamp(seg['start'])} --> {format_srt_timestamp(seg['end'])}\n")
-                        f.write(f"{seg['text'].strip()}\n\n")
-                logger.info(f"📝 SRT file saved to: {srt_path}")
-            except Exception as e:
-                logger.error(f"Error saving SRT file: {str(e)}")
-                logger.error(f"Exception traceback: {traceback.format_exc()}")
+  
         
         # Generate summary from transcript
         logger.info("Starting summary generation...")
