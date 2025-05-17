@@ -3,8 +3,7 @@ import logging
 import os
 import traceback
 from sqlalchemy.orm import Session
-from datetime import datetime
-from typing import Optional
+
 
 import sys
 from pathlib import Path
@@ -12,9 +11,6 @@ from pathlib import Path
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from common.common.database import get_db
-from common.common.models import Transcript, Summary, SummarizationJob, Video
-from common.common.job_queue import get_next_summarization_job, mark_job_started, mark_job_completed, mark_job_failed
 from summarization.summarizer import create_summary
 
 # Configure logging
@@ -71,15 +67,6 @@ def process_summarization_job(job: SummarizationJob, db: Session) -> bool:
         )
         db.add(summary)
         db.commit()
-        
-        # Save summary to file system for backward compatibility
-        if video_filename:
-            os.makedirs("data/summaries", exist_ok=True)
-            basename = os.path.splitext(video_filename)[0]
-            summary_path = os.path.join("data/summaries", f"{basename}_summary.txt")
-            with open(summary_path, "w", encoding="utf-8") as f:
-                f.write(summary_text)
-            logger.info(f"Summary saved to: {summary_path}")
         
         # Update transcript status
         transcript.status = "summarized"

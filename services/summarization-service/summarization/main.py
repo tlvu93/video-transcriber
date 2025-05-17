@@ -2,8 +2,7 @@ import argparse
 import logging
 import time
 import requests
-import traceback
-from typing import Optional
+
 
 from summarization.config import API_URL
 from summarization.worker import process_summarization_job

@@ -1,11 +1,8 @@
-import os
 import logging
-import time
 import requests
-import traceback
 from typing import Dict, Any, Tuple, Optional
 
-from summarization.config import TRANSCRIPT_DIR, SUMMARY_DIR, API_URL
+from summarization.config import  API_URL
 from summarization.summarizer import create_summary
 
 # Configure logging
@@ -83,22 +80,6 @@ def process_summarization_job(job_id: str) -> Tuple[bool, Optional[Dict[str, Any
         
         # Update transcript status via API
         update_transcript_status_api(transcript_id, "summarized")
-        
-        # Optionally save summary to file for backward compatibility
-        if transcript["video_id"]:
-            # Get the video filename
-            video = get_video_from_api(transcript["video_id"])
-            if video:
-                summary_filename = f"{os.path.splitext(video['filename'])[0]}_summary.txt"
-                summary_path = os.path.join(SUMMARY_DIR, summary_filename)
-                
-                # Ensure summary directory exists
-                os.makedirs(SUMMARY_DIR, exist_ok=True)
-                
-                # Save summary to file
-                with open(summary_path, "w", encoding="utf-8") as f:
-                    f.write(summary_text)
-                logger.info(f"Summary saved to file: {summary_path}")
         
         return True, None
         

@@ -1,11 +1,10 @@
 import os
 import sys
-import json
 import requests
 import logging
 import traceback
 from pathlib import Path
-from typing import Any, List, Mapping, Optional
+from typing import  List,  Optional
 from langchain_core.language_models.llms import LLM
 from langchain.chains.summarize import load_summarize_chain
 from langchain_core.documents import Document
@@ -14,7 +13,7 @@ from langchain_core.prompts import PromptTemplate
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from summarization.config import TRANSCRIPT_DIR, SUMMARY_DIR, LLM_HOST, LLM_MODEL
+from summarization.config import  LLM_HOST, LLM_MODEL
 
 # Configure logging
 logging.basicConfig(
@@ -23,9 +22,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('summarizer')
 
-# Ensure summary directory exists
-os.makedirs(SUMMARY_DIR, exist_ok=True)
-logger.info(f"Summary directory: {SUMMARY_DIR}")
+
 logger.info(f"Using LLM at: {LLM_HOST}")
 logger.info(f"Using model: {LLM_MODEL}")
 
@@ -226,19 +223,6 @@ CONSTRAINTS
             logger.error(f"⚠️ Error using LLM for summarization: {e}")
             logger.error(f"Exception traceback: {traceback.format_exc()}")
             return generate_fallback_summary(transcript_text)
-        
-        # Save the summary to a file
-        basename = os.path.splitext(os.path.basename(video_path))[0]
-        summary_path = os.path.join(SUMMARY_DIR, f"{basename}_summary.txt")
-        logger.info(f"Saving summary to: {summary_path}")
-        
-        try:
-            with open(summary_path, "w") as f:
-                f.write(summary)
-            logger.info(f"✅ Summary saved to: {summary_path}")
-        except Exception as e:
-            logger.error(f"Error saving summary file: {e}")
-            logger.error(f"Exception traceback: {traceback.format_exc()}")
         
         return summary
     

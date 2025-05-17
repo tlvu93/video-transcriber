@@ -7,8 +7,6 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 
 # Video and transcription directories
 VIDEO_DIR = os.path.join(DATA_DIR, "videos")
-TRANSCRIPT_DIR = os.path.join(DATA_DIR, "transcriptions")
-SUMMARY_DIR = os.path.join(DATA_DIR, "summaries")
 
 # Database
 DB_PATH = os.path.join(DATA_DIR, "db", "video_transcriber.db")

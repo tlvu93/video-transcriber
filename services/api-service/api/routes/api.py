@@ -16,7 +16,7 @@ from api.job_queue import (
     get_next_transcription_job, get_next_summarization_job,
     mark_job_started, mark_job_completed, mark_job_failed
 )
-from api.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR
+from api.config import VIDEO_DIR
 
 # Configure logging
 logging.basicConfig(
@@ -30,8 +30,6 @@ app = FastAPI(title="Video Transcriber API")
 
 # Ensure directories exist
 os.makedirs(VIDEO_DIR, exist_ok=True)
-os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
-os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 # Pydantic models for request/response
 class VideoCreate(BaseModel):

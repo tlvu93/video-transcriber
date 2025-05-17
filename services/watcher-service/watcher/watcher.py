@@ -5,7 +5,6 @@ import logging
 import traceback
 import hashlib
 import requests
-import json
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -13,7 +12,7 @@ from watchdog.events import FileSystemEventHandler
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from watcher.config import VIDEO_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, API_URL
+from watcher.config import VIDEO_DIR, API_URL
 
 # Configure logging
 logging.basicConfig(
@@ -118,13 +117,7 @@ def ensure_directories():
         logger.info("Creating necessary directories...")
         os.makedirs(VIDEO_DIR, exist_ok=True)
         logger.info(f"Video directory: {VIDEO_DIR}")
-        
-        os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
-        logger.info(f"Transcript directory: {TRANSCRIPT_DIR}")
-        
-        os.makedirs(SUMMARY_DIR, exist_ok=True)
-        logger.info(f"Summary directory: {SUMMARY_DIR}")
-        
+    
         logger.info("All directories created successfully")
     except Exception as e:
         logger.error(f"❌ Error creating directories: {str(e)}")
