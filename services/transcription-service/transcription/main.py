@@ -6,13 +6,14 @@ import traceback
 import json
 import os
 import sys
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Add the project root directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from transcription.config import API_URL
 from transcription.transcription_worker import process_transcription_job
+from transcription.queue_manager import TranscriptionQueueManager
 from common.messaging import (
     RabbitMQClient, 
     EVENT_VIDEO_CREATED,
@@ -30,8 +31,16 @@ logger = logging.getLogger('transcription')
 # Initialize RabbitMQ client
 rabbitmq_client = RabbitMQClient()
 
-def get_next_transcription_job_api():
-    """Get the next pending transcription job from the API."""
+# Initialize queue manager (will be set in main)
+queue_manager = None
+
+def get_next_transcription_job_api() -> Optional[Dict[str, Any]]:
+    """
+    Get the next pending transcription job from the API.
+    
+    Returns:
+        The next pending transcription job, or None if no jobs are pending
+    """
     try:
         response = requests.get(f"{API_URL}/transcription-jobs/next")
         if response.status_code == 404:
@@ -65,8 +74,8 @@ def handle_video_created_event(event_data: Dict[str, Any]):
         job = get_next_transcription_job_api()
         
         if job and job["video_id"] == video_id:
-            logger.info(f"Processing transcription job {job['id']} for video {video_id}")
-            process_transcription_job(job['id'])
+            logger.info(f"Adding transcription job {job['id']} for video {video_id} to queue")
+            queue_manager.add_job(job)
         else:
             logger.warning(f"No transcription job found for video {video_id}")
     
@@ -96,22 +105,40 @@ def handle_job_status_changed_event(event_data: Dict[str, Any]):
         
         logger.info(f"Received job.status.changed event for {job_type} job {job_id}: {status}")
         
-        # If the job is pending, process it
+        # If the job is pending, add it to the queue
         if status == "pending":
-            logger.info(f"Processing transcription job {job_id}")
-            process_transcription_job(job_id)
+            # Get job details
+            try:
+                response = requests.get(f"{API_URL}/transcription-jobs/{job_id}")
+                response.raise_for_status()
+                job = response.json()
+                
+                logger.info(f"Adding transcription job {job_id} to queue")
+                queue_manager.add_job(job)
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error getting job details: {str(e)}")
     
     except Exception as e:
         logger.error(f"Error handling job.status.changed event: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
 
-def run_event_based_worker():
+def run_event_based_worker(max_workers: int = 1, poll_interval: int = 5):
     """
     Run the transcription worker in event-based mode.
+    
+    Args:
+        max_workers: Maximum number of worker threads to use
+        poll_interval: Interval in seconds between polling for new jobs
     """
-    logger.info("Starting transcription worker in event-based mode")
+    global queue_manager
+    
+    logger.info(f"Starting transcription worker in event-based mode with {max_workers} workers")
     
     try:
+        # Initialize queue manager
+        queue_manager = TranscriptionQueueManager(max_workers=max_workers, poll_interval=poll_interval)
+        queue_manager.start(process_transcription_job, get_next_transcription_job_api)
+        
         # Connect to RabbitMQ
         rabbitmq_client.connect()
         
@@ -134,7 +161,7 @@ def run_event_based_worker():
         job = get_next_transcription_job_api()
         if job:
             logger.info(f"Found pending transcription job {job['id']} for video {job['video_id']}")
-            process_transcription_job(job['id'])
+            queue_manager.add_job(job)
         
         # Start consuming messages
         logger.info("Waiting for events...")
@@ -142,60 +169,66 @@ def run_event_based_worker():
     
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, shutting down")
+        queue_manager.stop()
         rabbitmq_client.stop_consuming()
         rabbitmq_client.close()
     
     except Exception as e:
         logger.error(f"Error in event-based worker: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
+        if queue_manager:
+            queue_manager.stop()
         rabbitmq_client.close()
 
-def run_polling_worker(poll_interval: int = 5):
+def run_polling_worker(max_workers: int = 1, poll_interval: int = 5):
     """
     Run the transcription worker in polling mode.
     
     Args:
+        max_workers: Maximum number of worker threads to use
         poll_interval: Interval in seconds between polling for new jobs
     """
-    logger.info(f"Starting transcription worker in polling mode with poll interval of {poll_interval} seconds")
+    global queue_manager
     
-    # Main worker loop
-    while True:
-        try:
-            # Get the next job from API
-            job = get_next_transcription_job_api()
-            
-            if job:
-                logger.info(f"Processing transcription job {job['id']} for video {job['video_id']}")
-                
-                try:
-                    # Process the job
-                    process_transcription_job(job['id'])
-                
-                except Exception as e:
-                    logger.exception(f"Error processing transcription job {job['id']}: {str(e)}")
-            
-            else:
-                # No jobs to process, wait for poll_interval seconds
-                logger.debug(f"No transcription jobs to process, waiting {poll_interval} seconds")
-            
-            # Sleep for poll_interval seconds
-            time.sleep(poll_interval)
-            
-        except Exception as e:
-            logger.exception(f"Error in worker loop: {str(e)}")
-            logger.error(f"Exception traceback: {traceback.format_exc()}")
-            time.sleep(poll_interval)  # Sleep and try again
+    logger.info(f"Starting transcription worker in polling mode with {max_workers} workers and {poll_interval}s poll interval")
+    
+    try:
+        # Initialize queue manager
+        queue_manager = TranscriptionQueueManager(max_workers=max_workers, poll_interval=poll_interval)
+        queue_manager.start(process_transcription_job, get_next_transcription_job_api)
+        
+        # Keep main thread alive
+        while True:
+            try:
+                # Log queue status periodically
+                status = queue_manager.get_queue_status()
+                logger.info(f"Queue status: {status}")
+                time.sleep(60)  # Log status every minute
+            except KeyboardInterrupt:
+                logger.info("Received keyboard interrupt, shutting down")
+                queue_manager.stop()
+                break
+            except Exception as e:
+                logger.error(f"Error in main loop: {str(e)}")
+                logger.error(f"Exception traceback: {traceback.format_exc()}")
+                time.sleep(poll_interval)
+    
+    except Exception as e:
+        logger.exception(f"Error in polling worker: {str(e)}")
+        logger.error(f"Exception traceback: {traceback.format_exc()}")
+        if queue_manager:
+            queue_manager.stop()
 
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Transcription worker")
     parser.add_argument("--poll-interval", type=int, default=5, help="Interval in seconds between polling for new jobs")
     parser.add_argument("--mode", type=str, choices=["event", "poll"], default="event", help="Worker mode: event-based or polling")
+    parser.add_argument("--max-workers", type=int, default=1, help="Maximum number of worker threads to use")
     args = parser.parse_args()
     
     # Run the worker in the specified mode
     if args.mode == "event":
-        run_event_based_worker()
+        run_event_based_worker(args.max_workers, args.poll_interval)
     else:
-        run_polling_worker(args.poll_interval)
+        run_polling_worker(args.max_workers, args.poll_interval)

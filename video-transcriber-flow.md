@@ -11,7 +11,14 @@ graph TD
     subgraph "Backend Services"
         WS[Watcher Service]
         API[API Service]
-        TS[Transcription Service]
+
+        subgraph "Transcription Service"
+            TSQ[Job Queue]
+            TSW1[Worker 1]
+            TSW2[Worker 2]
+            TSWn[Worker n]
+        end
+
         SS[Summarization Service]
         OLLAMA[Ollama LLM]
     end
@@ -29,19 +36,26 @@ graph TD
     WS -->|Publishes video.created event| MQ
 
     %% Event Flow
-    MQ -->|video.created event| TS
+    MQ -->|video.created event| TSQ
     MQ -->|transcription.created event| SS
-    MQ -->|job.status.changed event| TS
+    MQ -->|job.status.changed event| TSQ
     MQ -->|job.status.changed event| SS
 
     %% API Service Flow
     API -->|Publishes events| MQ
+    API -->|Creates transcription job| TSQ
 
     %% Transcription Service Flow
-    TS -->|Subscribes to events| MQ
-    TS -->|Transcribes video using Whisper| FS
-    TS -->|Creates transcript| API
-    TS -->|Publishes transcription.created event| MQ
+    TSQ -->|Distributes jobs| TSW1
+    TSQ -->|Distributes jobs| TSW2
+    TSQ -->|Distributes jobs| TSWn
+    TSW1 -->|Transcribes video using Whisper| FS
+    TSW2 -->|Transcribes video using Whisper| FS
+    TSWn -->|Transcribes video using Whisper| FS
+    TSW1 -->|Creates transcript| API
+    TSW2 -->|Creates transcript| API
+    TSWn -->|Creates transcript| API
+    API -->|Publishes transcription.created event| MQ
 
     %% Summarization Service Flow
     SS -->|Subscribes to events| MQ
@@ -60,7 +74,9 @@ graph TD
     API <-->|Stores/retrieves data| DB
 
     %% File System Interactions
-    FS -->|Video files| TS
+    FS -->|Video files| TSW1
+    FS -->|Video files| TSW2
+    FS -->|Video files| TSWn
 
     %% User Interactions
     User((User)) -->|Uploads video| FE
@@ -81,7 +97,9 @@ graph TD
 
    - The transcription service subscribes to `video.created` events
    - When an event is received, the service:
-     - Loads the Whisper model
+     - Adds the transcription job to the queue
+     - Worker threads pick up jobs from the queue
+     - Each worker loads the Whisper model
      - Transcribes the video
      - Creates a transcript with time-aligned segments
      - Updates the video status to "transcribed"
@@ -110,9 +128,22 @@ graph TD
 
 - **Watcher Service**: Monitors a directory for new video files
 - **API Service**: Provides REST API endpoints for all operations
-- **Transcription Service**: Transcribes videos using Whisper
+- **Transcription Service**: Transcribes videos using Whisper with a queue system for handling multiple requests
 - **Summarization Service**: Summarizes transcripts using Ollama LLM
 - **RabbitMQ**: Message broker for event-based communication between services
+
+### Transcription Service Queue System
+
+The transcription service implements a queue system to handle multiple transcription requests efficiently:
+
+1. **Queue Manager**: Manages the queue of transcription jobs and worker threads
+2. **Worker Threads**: Process transcription jobs concurrently (configurable number)
+3. **Job Fetcher**: Polls for new jobs and adds them to the queue
+4. **Configuration Options**:
+   - `MAX_WORKERS`: Maximum number of worker threads (default: 2)
+   - `POLL_INTERVAL`: Interval in seconds between polling for new jobs (default: 5)
+
+This queue system prevents the service from being overwhelmed when many requests come in simultaneously, ensuring that all videos are transcribed in an orderly manner.
 
 ### Data Storage
 

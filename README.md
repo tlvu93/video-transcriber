@@ -52,3 +52,28 @@ All scripts provide help information when run with the `-h` or `--help` flag:
 - `summarization-service/`: Service for summarizing transcriptions
 - `transcription-service/`: Service for transcribing videos
 - `vt-cli/`: CLI tools for managing the application
+
+## Configuration
+
+### Transcription Service Queue
+
+The transcription service now includes a queue system to handle multiple transcription requests efficiently. This prevents the service from being overwhelmed when many requests come in simultaneously.
+
+You can configure the queue with the following environment variables:
+
+- `MAX_WORKERS`: Maximum number of worker threads to process transcription jobs concurrently (default: 2)
+- `POLL_INTERVAL`: Interval in seconds between polling for new jobs (default: 5)
+
+Example:
+
+```bash
+# Start with 4 worker threads
+MAX_WORKERS=4 ./vt docker start
+
+# Or set environment variables before starting
+export MAX_WORKERS=4
+export POLL_INTERVAL=10
+./vt docker start
+```
+
+You can also modify these values directly in the `docker-compose.yml` file.

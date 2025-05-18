@@ -101,14 +101,27 @@ def process_transcription_job(job_id: str) -> bool:
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Video file not found: {filepath}")
         
+        # Check file size
+        file_size = os.path.getsize(filepath)
+        if file_size == 0:
+            raise ValueError(f"Video file is empty (0 bytes): {filepath}")
+        
+        logger.info(f"Processing video: {video['filename']} (size: {file_size} bytes)")
+        
         # Load Whisper model
         whisper_model = load_whisper_model()
         
         # Transcribe video
         logger.info(f"Transcribing video: {video['filename']}")
-        result = whisper_model.transcribe(filepath, verbose=False)
-        transcript_text = result["text"]
-        logger.info(f"Transcription completed, length: {len(transcript_text)} characters")
+        try:
+            result = whisper_model.transcribe(filepath, verbose=False)
+            transcript_text = result["text"]
+            logger.info(f"Transcription completed, length: {len(transcript_text)} characters")
+        except RuntimeError as e:
+            if "cannot reshape tensor of 0 elements" in str(e):
+                raise ValueError(f"Cannot process video file: {filepath}. The file may be corrupted or in an unsupported format.")
+            else:
+                raise
         
         # Create transcript via API
         segments = result.get("segments", None)

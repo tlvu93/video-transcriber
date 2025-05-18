@@ -94,8 +94,14 @@ services:
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=videotranscriber
       - RABBITMQ_PASSWORD=videotranscriber
+      - MAX_WORKERS=${MAX_WORKERS:-2}
+      - POLL_INTERVAL=${POLL_INTERVAL:-5}
     command:
-      ["sh", "-c", "pip install pika==1.3.2 && python -m transcription.main"]
+      [
+        "sh",
+        "-c",
+        "pip install pika==1.3.2 && python -m transcription.main --max-workers=${MAX_WORKERS:-2} --poll-interval=${POLL_INTERVAL:-5}",
+      ]
     working_dir: /app/transcription-service
     restart: unless-stopped
     logging:
