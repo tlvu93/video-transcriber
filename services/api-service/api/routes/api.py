@@ -808,17 +808,23 @@ def get_video(video_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Video not found")
     return video
 
+from fastapi import Request, Response
+from fastapi.responses import StreamingResponse
+import re
+import stat
+
 @app.get("/videos/{video_id}/download")
-def download_video(video_id: str, db: Session = Depends(get_db)):
+def download_video(video_id: str, request: Request, db: Session = Depends(get_db)):
     """
-    Download a video by ID.
+    Download a video by ID with support for HTTP Range requests.
     
     Args:
         video_id: The ID of the video
+        request: The FastAPI request object
         db: Database session
         
     Returns:
-        The video file
+        The video file with support for partial content
     """
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
@@ -828,7 +834,82 @@ def download_video(video_id: str, db: Session = Depends(get_db)):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Video file not found")
     
-    return FileResponse(file_path, filename=video.filename)
+    # Get file size
+    file_size = os.stat(file_path)[stat.ST_SIZE]
+    
+    # Check if Range header exists
+    range_header = request.headers.get("Range", None)
+    
+    # If no Range header, return the full file
+    if range_header is None:
+        return FileResponse(file_path, filename=video.filename)
+    
+    # Parse the Range header
+    range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+    if not range_match:
+        # If Range header is invalid, return the full file
+        return FileResponse(file_path, filename=video.filename)
+    
+    # Extract start and end bytes
+    start_byte = int(range_match.group(1))
+    end_byte_str = range_match.group(2)
+    end_byte = int(end_byte_str) if end_byte_str else file_size - 1
+    
+    # Ensure end byte is not beyond file size
+    end_byte = min(end_byte, file_size - 1)
+    
+    # Calculate content length
+    content_length = end_byte - start_byte + 1
+    
+    # Define a generator to stream the file in chunks
+    def file_iterator(start, end, chunk_size=8192):
+        with open(file_path, "rb") as f:
+            f.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                chunk = f.read(min(chunk_size, remaining))
+                if not chunk:
+                    break
+                yield chunk
+                remaining -= len(chunk)
+    
+    # Create response headers
+    headers = {
+        "Content-Range": f"bytes {start_byte}-{end_byte}/{file_size}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(content_length),
+        "Content-Disposition": f'attachment; filename="{video.filename}"',
+    }
+    
+    # Determine the media type based on file extension
+    import mimetypes
+    file_extension = os.path.splitext(video.filename)[1].lower()
+    media_type = mimetypes.guess_type(video.filename)[0]
+    
+    # Default to video/mp4 if we can't determine the media type
+    if not media_type:
+        if file_extension in ['.mp4', '.m4v']:
+            media_type = "video/mp4"
+        elif file_extension in ['.mov', '.qt']:
+            media_type = "video/quicktime"
+        elif file_extension in ['.avi']:
+            media_type = "video/x-msvideo"
+        elif file_extension in ['.wmv']:
+            media_type = "video/x-ms-wmv"
+        elif file_extension in ['.webm']:
+            media_type = "video/webm"
+        else:
+            media_type = "video/mp4"  # Default fallback
+    
+    logger.info(f"Serving video {video.filename} with media type: {media_type}")
+    
+    # Return a streaming response with the appropriate status code and headers
+    return StreamingResponse(
+        file_iterator(start_byte, end_byte),
+        status_code=206,  # Partial Content
+        headers=headers,
+        media_type=media_type
+    )
 
 @app.get("/transcripts/")
 def list_transcripts(video_id: Optional[str] = None, db: Session = Depends(get_db)):
