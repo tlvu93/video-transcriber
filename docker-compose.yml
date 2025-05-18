@@ -189,6 +189,7 @@ services:
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=videotranscriber
       - RABBITMQ_PASSWORD=videotranscriber
+      - VIDEO_DIRS=${VIDEO_DIRS:-/app/data/videos}
     command:
       ["sh", "-c", "pip install pika==1.3.2 && python -m watcher.watcher"]
     working_dir: /app/watcher-service

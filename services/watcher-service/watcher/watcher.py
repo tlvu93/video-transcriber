@@ -12,7 +12,7 @@ from watchdog.events import FileSystemEventHandler
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from watcher.config import VIDEO_DIR, API_URL
+from watcher.config import VIDEO_DIRS, API_URL
 from common.messaging import (
     RabbitMQClient, 
     publish_video_created_event
@@ -131,8 +131,9 @@ def ensure_directories():
     """Create all necessary directories for the application."""
     try:
         logger.info("Creating necessary directories...")
-        os.makedirs(VIDEO_DIR, exist_ok=True)
-        logger.info(f"Video directory: {VIDEO_DIR}")
+        for video_dir in VIDEO_DIRS:
+            os.makedirs(video_dir, exist_ok=True)
+            logger.info(f"Video directory: {video_dir}")
     
         logger.info("All directories created successfully")
     except Exception as e:
@@ -141,18 +142,20 @@ def ensure_directories():
         raise
 
 def process_existing_files():
-    """Process existing video files in the VIDEO_DIR directory."""
-    logger.info(f"Processing existing video files in {VIDEO_DIR}")
-    
-    try:
-        for filename in os.listdir(VIDEO_DIR):
-            file_path = os.path.join(VIDEO_DIR, filename)
-            if os.path.isfile(file_path) and filename.endswith((".mp4", ".mov", ".mkv")):
-                logger.info(f"Found existing video file: {filename}")
-                process_video_file(file_path)
-    except Exception as e:
-        logger.error(f"❌ Error processing existing files: {str(e)}")
-        logger.error(f"Exception traceback: {traceback.format_exc()}")
+    """Process existing video files in all video directories and their subdirectories."""
+    for video_dir in VIDEO_DIRS:
+        logger.info(f"Processing existing video files in {video_dir} (including subdirectories)")
+        
+        try:
+            for root, _, files in os.walk(video_dir):
+                for filename in files:
+                    if filename.endswith((".mp4", ".mov", ".mkv")):
+                        file_path = os.path.join(root, filename)
+                        logger.info(f"Found existing video file: {file_path}")
+                        process_video_file(file_path)
+        except Exception as e:
+            logger.error(f"❌ Error processing existing files in {video_dir}: {str(e)}")
+            logger.error(f"Exception traceback: {traceback.format_exc()}")
 
 def check_api_connection():
     """Check if the API service is available."""
@@ -201,12 +204,15 @@ def start_watching():
         
         event_handler = VideoFolderHandler()
         observer = Observer()
-        observer.schedule(event_handler, VIDEO_DIR, recursive=False)
         
-        logger.info(f"Starting file observer for {VIDEO_DIR}")
+        # Schedule observers for all video directories
+        for video_dir in VIDEO_DIRS:
+            observer.schedule(event_handler, video_dir, recursive=True)
+            logger.info(f"Starting file observer for {video_dir}")
+        
         observer.start()
         
-        logger.info(f"👀 Watching for changes in {VIDEO_DIR}...")
+        logger.info(f"👀 Watching for changes in video directories...")
         logger.info(f"📋 Press Ctrl+C to stop")
         
         try:

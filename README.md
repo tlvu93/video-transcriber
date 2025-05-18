@@ -77,3 +77,28 @@ export POLL_INTERVAL=10
 ```
 
 You can also modify these values directly in the `docker-compose.yml` file.
+
+### Video Watcher Service
+
+The watcher service monitors video directories for new video files and automatically processes them.
+
+#### Nested Folders Support
+
+The watcher service now supports detecting videos in nested folders. Any video files placed in subdirectories of the configured video directories will be automatically detected and processed.
+
+#### Multiple Video Directories
+
+You can configure multiple video directories to be watched by setting the `VIDEO_DIRS` environment variable. Separate multiple directories with commas.
+
+Example:
+
+```bash
+# Watch multiple directories
+VIDEO_DIRS=/app/data/videos,/app/data/external_videos ./vt docker start
+
+# Or set environment variables before starting
+export VIDEO_DIRS=/app/data/videos,/app/data/external_videos
+./vt docker start
+```
+
+By default, the watcher service monitors the `/app/data/videos` directory inside the container (which maps to `./data/videos` on your host machine).
