@@ -1,9 +1,7 @@
 import argparse
 import logging
-import time
 import requests
 import traceback
-import json
 import os
 import sys
 from typing import Dict, Any, Optional
@@ -17,8 +15,7 @@ from transcription.queue_manager import TranscriptionQueueManager
 from common.messaging import (
     RabbitMQClient, 
     EVENT_VIDEO_CREATED,
-    EVENT_JOB_STATUS_CHANGED,
-    publish_job_status_changed_event
+    EVENT_JOB_STATUS_CHANGED
 )
 
 # Configure logging
@@ -122,22 +119,21 @@ def handle_job_status_changed_event(event_data: Dict[str, Any]):
         logger.error(f"Error handling job.status.changed event: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
 
-def run_event_based_worker(max_workers: int = 1, poll_interval: int = 5):
+def run_worker(max_workers: int = 1):
     """
     Run the transcription worker in event-based mode.
     
     Args:
         max_workers: Maximum number of worker threads to use
-        poll_interval: Interval in seconds between polling for new jobs
     """
     global queue_manager
     
-    logger.info(f"Starting transcription worker in event-based mode with {max_workers} workers")
+    logger.info(f"Starting transcription worker with {max_workers} workers")
     
     try:
         # Initialize queue manager
-        queue_manager = TranscriptionQueueManager(max_workers=max_workers, poll_interval=poll_interval)
-        queue_manager.start(process_transcription_job, get_next_transcription_job_api)
+        queue_manager = TranscriptionQueueManager(max_workers=max_workers)
+        queue_manager.start(process_transcription_job)
         
         # Connect to RabbitMQ
         rabbitmq_client.connect()
@@ -174,61 +170,17 @@ def run_event_based_worker(max_workers: int = 1, poll_interval: int = 5):
         rabbitmq_client.close()
     
     except Exception as e:
-        logger.error(f"Error in event-based worker: {str(e)}")
+        logger.error(f"Error in worker: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
         if queue_manager:
             queue_manager.stop()
         rabbitmq_client.close()
 
-def run_polling_worker(max_workers: int = 1, poll_interval: int = 5):
-    """
-    Run the transcription worker in polling mode.
-    
-    Args:
-        max_workers: Maximum number of worker threads to use
-        poll_interval: Interval in seconds between polling for new jobs
-    """
-    global queue_manager
-    
-    logger.info(f"Starting transcription worker in polling mode with {max_workers} workers and {poll_interval}s poll interval")
-    
-    try:
-        # Initialize queue manager
-        queue_manager = TranscriptionQueueManager(max_workers=max_workers, poll_interval=poll_interval)
-        queue_manager.start(process_transcription_job, get_next_transcription_job_api)
-        
-        # Keep main thread alive
-        while True:
-            try:
-                # Log queue status periodically
-                status = queue_manager.get_queue_status()
-                logger.info(f"Queue status: {status}")
-                time.sleep(60)  # Log status every minute
-            except KeyboardInterrupt:
-                logger.info("Received keyboard interrupt, shutting down")
-                queue_manager.stop()
-                break
-            except Exception as e:
-                logger.error(f"Error in main loop: {str(e)}")
-                logger.error(f"Exception traceback: {traceback.format_exc()}")
-                time.sleep(poll_interval)
-    
-    except Exception as e:
-        logger.exception(f"Error in polling worker: {str(e)}")
-        logger.error(f"Exception traceback: {traceback.format_exc()}")
-        if queue_manager:
-            queue_manager.stop()
-
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Transcription worker")
-    parser.add_argument("--poll-interval", type=int, default=5, help="Interval in seconds between polling for new jobs")
-    parser.add_argument("--mode", type=str, choices=["event", "poll"], default="event", help="Worker mode: event-based or polling")
     parser.add_argument("--max-workers", type=int, default=1, help="Maximum number of worker threads to use")
     args = parser.parse_args()
     
-    # Run the worker in the specified mode
-    if args.mode == "event":
-        run_event_based_worker(args.max_workers, args.poll_interval)
-    else:
-        run_polling_worker(args.max_workers, args.poll_interval)
+    # Run the worker
+    run_worker(args.max_workers)

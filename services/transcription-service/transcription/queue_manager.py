@@ -18,40 +18,35 @@ class TranscriptionQueueManager:
     Manages a queue of transcription jobs and processes them using worker threads.
     """
     
-    def __init__(self, max_workers: int = 1, poll_interval: int = 5):
+    def __init__(self, max_workers: int = 1):
         """
         Initialize the queue manager.
         
         Args:
             max_workers: Maximum number of worker threads to use
-            poll_interval: Interval in seconds between polling for new jobs
         """
         self.max_workers = max_workers
-        self.poll_interval = poll_interval
         self.job_queue = queue.Queue()
         self.active_jobs = {}  # job_id -> job_data
         self.workers = []
         self.running = False
         self.lock = threading.Lock()
         self.job_processor = None
-        self.job_fetcher = None
         
-        logger.info(f"Initialized queue manager with {max_workers} workers and {poll_interval}s poll interval")
+        logger.info(f"Initialized queue manager with {max_workers} workers")
     
-    def start(self, job_processor: Callable[[str], bool], job_fetcher: Callable[[], Optional[Dict[str, Any]]]):
+    def start(self, job_processor: Callable[[str], bool]):
         """
         Start the queue manager.
         
         Args:
             job_processor: Function to process a job, takes job_id and returns success status
-            job_fetcher: Function to fetch the next job, returns job data or None
         """
         if self.running:
             logger.warning("Queue manager is already running")
             return
         
         self.job_processor = job_processor
-        self.job_fetcher = job_fetcher
         self.running = True
         
         # Start worker threads
@@ -64,16 +59,6 @@ class TranscriptionQueueManager:
             worker.start()
             self.workers.append(worker)
             logger.info(f"Started worker thread {i}")
-        
-        # Start job fetcher thread
-        fetcher = threading.Thread(
-            target=self._job_fetcher_thread,
-            name="job-fetcher",
-            daemon=True
-        )
-        fetcher.start()
-        self.workers.append(fetcher)
-        logger.info("Started job fetcher thread")
         
         logger.info("Queue manager started")
     
@@ -181,47 +166,3 @@ class TranscriptionQueueManager:
                 logger.error(f"Error in worker thread: {str(e)}")
                 logger.error(f"Exception traceback: {traceback.format_exc()}")
                 time.sleep(1)  # Avoid tight loop in case of error
-    
-    def _job_fetcher_thread(self):
-        """
-        Job fetcher thread function.
-        Fetches jobs from the API and adds them to the queue.
-        """
-        while self.running:
-            try:
-                # Check if we need more jobs
-                with self.lock:
-                    queue_size = self.job_queue.qsize()
-                    active_jobs = len(self.active_jobs)
-                
-                # If queue is not empty or all workers are busy, wait
-                if queue_size > 0 or active_jobs >= self.max_workers:
-                    time.sleep(self.poll_interval)
-                    continue
-                
-                # Fetch next job
-                job = self.job_fetcher()
-                if job:
-                    job_id = job.get("id")
-                    if job_id:
-                        # Check if the job is already in the queue or being processed
-                        with self.lock:
-                            if job_id in self.active_jobs:
-                                logger.warning(f"Job {job_id} is already in the queue or being processed, skipping")
-                                time.sleep(self.poll_interval)
-                                continue
-                        
-                        # Add job to queue
-                        self.add_job(job)
-                        logger.info(f"Added job {job_id} to queue")
-                    else:
-                        logger.error("Job data does not contain id")
-                else:
-                    # No jobs to process, wait for poll_interval seconds
-                    logger.debug(f"No jobs to process, waiting {self.poll_interval} seconds")
-                    time.sleep(self.poll_interval)
-            
-            except Exception as e:
-                logger.error(f"Error in job fetcher thread: {str(e)}")
-                logger.error(f"Exception traceback: {traceback.format_exc()}")
-                time.sleep(self.poll_interval)  # Sleep and try again

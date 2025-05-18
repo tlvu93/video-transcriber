@@ -97,12 +97,10 @@ def process_summarization_job(job: SummarizationJob, db: Session) -> bool:
         
         return False
 
-def start_worker(poll_interval: int = 5):
+def start_worker():
     """
     Start the summarization worker.
     
-    Args:
-        poll_interval: Time in seconds to wait between polling for new jobs
     """
     logger.info("Starting summarization worker")
     
@@ -119,13 +117,10 @@ def start_worker(poll_interval: int = 5):
                 else:
                     logger.debug("No pending summarization jobs")
             
-            # Wait before checking for new jobs
-            time.sleep(poll_interval)
             
         except Exception as e:
             logger.error(f"Error in summarization worker: {str(e)}")
             logger.error(f"Exception traceback: {traceback.format_exc()}")
-            time.sleep(poll_interval)
 
 if __name__ == "__main__":
     start_worker()

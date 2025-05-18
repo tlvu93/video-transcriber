@@ -1,9 +1,7 @@
 import argparse
 import logging
-import time
 import requests
 import traceback
-import json
 import os
 import sys
 from typing import Dict, Any
@@ -16,8 +14,7 @@ from summarization.worker import process_summarization_job
 from common.messaging import (
     RabbitMQClient, 
     EVENT_TRANSCRIPTION_CREATED,
-    EVENT_JOB_STATUS_CHANGED,
-    publish_job_status_changed_event
+    EVENT_JOB_STATUS_CHANGED
 )
 
 # Configure logging
@@ -105,11 +102,11 @@ def handle_job_status_changed_event(event_data: Dict[str, Any]):
         logger.error(f"Error handling job.status.changed event: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
 
-def run_event_based_worker():
+def run_worker():
     """
     Run the summarization worker in event-based mode.
     """
-    logger.info("Starting summarization worker in event-based mode")
+    logger.info("Starting summarization worker")
     
     try:
         # Connect to RabbitMQ
@@ -146,56 +143,14 @@ def run_event_based_worker():
         rabbitmq_client.close()
     
     except Exception as e:
-        logger.error(f"Error in event-based worker: {str(e)}")
+        logger.error(f"Error in worker: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
         rabbitmq_client.close()
-
-def run_polling_worker(poll_interval: int = 5):
-    """
-    Run the summarization worker in polling mode.
-    
-    Args:
-        poll_interval: Interval in seconds between polling for new jobs
-    """
-    logger.info(f"Starting summarization worker in polling mode with poll interval of {poll_interval} seconds")
-    
-    # Main worker loop
-    while True:
-        try:
-            # Get the next job from API
-            job = get_next_summarization_job_api()
-            
-            if job:
-                logger.info(f"Processing summarization job {job['id']} for transcript {job['transcript_id']}")
-                
-                try:
-                    # Process the job
-                    process_summarization_job(job['id'])
-                
-                except Exception as e:
-                    logger.exception(f"Error processing summarization job {job['id']}: {str(e)}")
-            
-            else:
-                # No jobs to process, wait for poll_interval seconds
-                logger.debug(f"No summarization jobs to process, waiting {poll_interval} seconds")
-            
-            # Sleep for poll_interval seconds
-            time.sleep(poll_interval)
-            
-        except Exception as e:
-            logger.exception(f"Error in worker loop: {str(e)}")
-            logger.error(f"Exception traceback: {traceback.format_exc()}")
-            time.sleep(poll_interval)  # Sleep and try again
 
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Summarization worker")
-    parser.add_argument("--poll-interval", type=int, default=5, help="Interval in seconds between polling for new jobs")
-    parser.add_argument("--mode", type=str, choices=["event", "poll"], default="event", help="Worker mode: event-based or polling")
     args = parser.parse_args()
     
-    # Run the worker in the specified mode
-    if args.mode == "event":
-        run_event_based_worker()
-    else:
-        run_polling_worker(args.poll_interval)
+    # Run the worker
+    run_worker()
