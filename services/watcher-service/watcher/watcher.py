@@ -81,6 +81,18 @@ def process_video_file(file_path):
             video = response.json()
             logger.info(f"Added video {filename} to the database with ID: {video['id']}")
             
+            # Create a transcription job for the video via API
+            job_url = f"{API_URL}/transcription-jobs/"
+            job_data = {
+                "video_id": video['id']
+            }
+            
+            job_response = requests.post(job_url, json=job_data)
+            job_response.raise_for_status()
+            
+            job = job_response.json()
+            logger.info(f"Created transcription job {job['id']} for video {video['id']} via API")
+            
             # Publish video created event
             try:
                 rabbitmq_client.connect()
@@ -88,19 +100,7 @@ def process_video_file(file_path):
                 logger.info(f"Published video.created event for video {video['id']}")
             except Exception as e:
                 logger.error(f"Error publishing event: {str(e)}")
-                # Continue with API-based job creation as fallback
-                
-                # Create a transcription job for the video via API
-                job_url = f"{API_URL}/transcription-jobs/"
-                job_data = {
-                    "video_id": video['id']
-                }
-                
-                job_response = requests.post(job_url, json=job_data)
-                job_response.raise_for_status()
-                
-                job = job_response.json()
-                logger.info(f"Created transcription job {job['id']} for video {video['id']} via API (fallback)")
+                logger.info(f"Continuing with processing as transcription job was already created via API")
         except requests.exceptions.RequestException as e:
             logger.error(f"Error registering video or creating job: {str(e)}")
             

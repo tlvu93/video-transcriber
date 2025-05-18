@@ -55,6 +55,18 @@ def create_transcript_api(video_id, content, segments=None):
         transcript = response.json()
         logger.info(f"Created transcript {transcript['id']} for video {video_id}")
         
+        # Create a summarization job for the transcript via API
+        job_url = f"{API_URL}/summarization-jobs/"
+        job_data = {
+            "transcript_id": transcript['id']
+        }
+        
+        job_response = requests.post(job_url, json=job_data)
+        job_response.raise_for_status()
+        
+        job = job_response.json()
+        logger.info(f"Created summarization job {job['id']} for transcript {transcript['id']} via API")
+        
         # Publish transcript created event
         try:
             rabbitmq_client.connect()
@@ -66,19 +78,7 @@ def create_transcript_api(video_id, content, segments=None):
             logger.info(f"Published transcription.created event for transcript {transcript['id']}")
         except Exception as e:
             logger.error(f"Error publishing event: {str(e)}")
-            # Continue with API-based job creation as fallback
-            
-            # Create a summarization job for the transcript via API
-            job_url = f"{API_URL}/summarization-jobs/"
-            job_data = {
-                "transcript_id": transcript['id']
-            }
-            
-            job_response = requests.post(job_url, json=job_data)
-            job_response.raise_for_status()
-            
-            job = job_response.json()
-            logger.info(f"Created summarization job {job['id']} for transcript {transcript['id']} via API (fallback)")
+            logger.info(f"Continuing with processing as summarization job was already created via API")
         
         return transcript
     
