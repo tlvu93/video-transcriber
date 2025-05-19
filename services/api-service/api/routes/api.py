@@ -368,6 +368,14 @@ async def create_transcription_job_endpoint(
     # Create a transcription job
     job = create_transcription_job(job_data.video_id, db)
     
+    # Publish job status changed event
+    try:
+        rabbitmq_client.connect()
+        publish_job_status_changed_event(rabbitmq_client, "transcription", str(job.id), "pending")
+        logger.info(f"Published job.status.changed event for transcription job {job.id}")
+    except Exception as e:
+        logger.error(f"Error publishing event: {str(e)}")
+    
     return job
 
 @app.get("/transcription-jobs/next", response_model=Optional[TranscriptionJobResponse])
