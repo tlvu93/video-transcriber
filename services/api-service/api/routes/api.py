@@ -964,11 +964,20 @@ def download_video(video_id: str, request: Request, db: Session = Depends(get_db
                 remaining -= len(chunk)
     
     # Create response headers
+    # Use RFC 6266/5987 encoding for the filename to handle non-Latin-1 characters
+    import urllib.parse
+    
+    # Regular ASCII filename for backward compatibility
+    ascii_filename = video.filename.encode('ascii', 'replace').decode('ascii')
+    
+    # UTF-8 encoded filename with proper format: filename*=UTF-8''encoded-filename
+    utf8_filename = urllib.parse.quote(video.filename.encode('utf-8'))
+    
     headers = {
         "Content-Range": f"bytes {start_byte}-{end_byte}/{file_size}",
         "Accept-Ranges": "bytes",
         "Content-Length": str(content_length),
-        "Content-Disposition": f'attachment; filename="{video.filename}"',
+        "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{utf8_filename}",
     }
     
     # Determine the media type based on file extension
