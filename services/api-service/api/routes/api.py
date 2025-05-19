@@ -16,7 +16,7 @@ from api.job_queue import (
     get_next_transcription_job, get_next_summarization_job,
     mark_job_started, mark_job_completed, mark_job_failed
 )
-from api.config import VIDEO_DIR
+from api.config import VIDEO_DIR, VIDEO_DIRS
 from common.messaging import (
     RabbitMQClient, 
     publish_video_created_event,
@@ -205,9 +205,37 @@ async def register_video(
     logger.info(f"Registering video: {video_data.filename}")
     
     # Check if the video file exists
-    file_path = os.path.join(VIDEO_DIR, video_data.filename)
+    filename = video_data.filename
+    file_path = os.path.join(VIDEO_DIR, filename)
+    
+    # If file doesn't exist at the expected path, search in all video directories and their subdirectories
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"Video file not found: {video_data.filename}")
+        logger.info(f"Video file not found at {file_path}, searching in all video directories...")
+        found = False
+        
+        # Search in all configured video directories
+        for video_dir in VIDEO_DIRS:
+            # First check directly in the video directory
+            test_path = os.path.join(video_dir, filename)
+            if os.path.exists(test_path):
+                file_path = test_path
+                logger.info(f"Found video file at: {file_path}")
+                found = True
+                break
+            
+            # Then search in subdirectories
+            for root, _, files in os.walk(video_dir):
+                if filename in files:
+                    file_path = os.path.join(root, filename)
+                    logger.info(f"Found video file at: {file_path}")
+                    found = True
+                    break
+            
+            if found:
+                break
+        
+        if not found:
+            raise HTTPException(status_code=404, detail=f"Video file not found: {filename}")
     
     # Check if a video with the same filename exists
     existing_video = db.query(Video).filter(Video.filename == video_data.filename).first()
@@ -830,9 +858,38 @@ def download_video(video_id: str, request: Request, db: Session = Depends(get_db
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
     
-    file_path = os.path.join(VIDEO_DIR, video.filename)
+    # Try to find the video file in all video directories
+    filename = video.filename
+    file_path = os.path.join(VIDEO_DIR, filename)
+    
+    # If file doesn't exist at the expected path, search in all video directories and their subdirectories
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Video file not found")
+        logger.info(f"Video file not found at {file_path}, searching in all video directories...")
+        found = False
+        
+        # Search in all configured video directories
+        for video_dir in VIDEO_DIRS:
+            # First check directly in the video directory
+            test_path = os.path.join(video_dir, filename)
+            if os.path.exists(test_path):
+                file_path = test_path
+                logger.info(f"Found video file at: {file_path}")
+                found = True
+                break
+            
+            # Then search in subdirectories
+            for root, _, files in os.walk(video_dir):
+                if filename in files:
+                    file_path = os.path.join(root, filename)
+                    logger.info(f"Found video file at: {file_path}")
+                    found = True
+                    break
+            
+            if found:
+                break
+        
+        if not found:
+            raise HTTPException(status_code=404, detail=f"Video file not found: {filename}")
     
     # Get file size
     file_size = os.stat(file_path)[stat.ST_SIZE]

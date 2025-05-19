@@ -10,7 +10,7 @@ from pathlib import Path
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from transcription.config import VIDEO_DIR, API_URL
+from transcription.config import VIDEO_DIR, VIDEO_DIRS, API_URL
 from transcription.utils import get_video_metadata
 from common.messaging import (
     RabbitMQClient, 
@@ -137,8 +137,35 @@ def process_video(filepath):
     try:
         # Check if file exists and is accessible
         if not os.path.exists(filepath):
-            logger.error(f"❌ File not found: {filepath}")
-            return None, None, None
+            # If file doesn't exist at the expected path, try to find it in all video directories and their subdirectories
+            filename = os.path.basename(filepath)
+            logger.info(f"File not found at {filepath}, searching in all video directories for {filename}...")
+            found = False
+            
+            # Search in all configured video directories
+            for video_dir in VIDEO_DIRS:
+                # First check directly in the video directory
+                test_path = os.path.join(video_dir, filename)
+                if os.path.exists(test_path):
+                    filepath = test_path
+                    logger.info(f"Found video file at: {filepath}")
+                    found = True
+                    break
+                
+                # Then search in subdirectories
+                for root, _, files in os.walk(video_dir):
+                    if filename in files:
+                        filepath = os.path.join(root, filename)
+                        logger.info(f"Found video file at: {filepath}")
+                        found = True
+                        break
+                
+                if found:
+                    break
+            
+            if not found:
+                logger.error(f"❌ File not found: {filename}")
+                return None, None, None
             
         # Get video metadata
         try:

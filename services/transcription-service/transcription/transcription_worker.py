@@ -13,7 +13,7 @@ from pathlib import Path
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from transcription.config import VIDEO_DIR, API_URL
+from transcription.config import VIDEO_DIR, VIDEO_DIRS, API_URL
 from transcription.processor import (
     create_transcript_api,
     update_job_status_api
@@ -97,9 +97,39 @@ def process_transcription_job(job_id: str) -> bool:
         video = get_video_from_api(video_id)
         
         # Get video file path
-        filepath = os.path.join("/app/data/videos", video["filename"])
+        filename = video["filename"]
+        
+        # First try the default path
+        filepath = os.path.join("/app/data/videos", filename)
+        
+        # If file doesn't exist at the expected path, search in all video directories and their subdirectories
         if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Video file not found: {filepath}")
+            logger.info(f"Video file not found at {filepath}, searching in all video directories...")
+            found = False
+            
+            # Search in all configured video directories
+            for video_dir in VIDEO_DIRS:
+                # First check directly in the video directory
+                test_path = os.path.join(video_dir, filename)
+                if os.path.exists(test_path):
+                    filepath = test_path
+                    logger.info(f"Found video file at: {filepath}")
+                    found = True
+                    break
+                
+                # Then search in subdirectories
+                for root, _, files in os.walk(video_dir):
+                    if filename in files:
+                        filepath = os.path.join(root, filename)
+                        logger.info(f"Found video file at: {filepath}")
+                        found = True
+                        break
+                
+                if found:
+                    break
+            
+            if not found:
+                raise FileNotFoundError(f"Video file not found: {filename}")
         
         # Check file size
         file_size = os.path.getsize(filepath)
