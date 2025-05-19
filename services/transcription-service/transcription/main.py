@@ -4,7 +4,7 @@ import requests
 import traceback
 import os
 import sys
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Add the project root directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -48,6 +48,24 @@ def get_next_transcription_job_api() -> Optional[Dict[str, Any]]:
     except requests.exceptions.RequestException as e:
         logger.error(f"Error getting next transcription job: {str(e)}")
         return None
+
+def get_all_pending_transcription_jobs_api() -> List[Dict[str, Any]]:
+    """
+    Get all pending transcription jobs from the API.
+    
+    Returns:
+        List of all pending transcription jobs, or empty list if no jobs are pending
+    """
+    try:
+        response = requests.get(f"{API_URL}/transcription-jobs?status=pending")
+        if response.status_code == 404:
+            # No pending jobs
+            return []
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error getting pending transcription jobs: {str(e)}")
+        return []
 
 def handle_video_created_event(event_data: Dict[str, Any]):
     """
@@ -152,12 +170,16 @@ def run_worker(max_workers: int = 1):
             "transcription_job_status_queue"
         )
         
-        # Process any existing pending jobs
+        # Process all existing pending jobs
         logger.info("Checking for existing pending jobs")
-        job = get_next_transcription_job_api()
-        if job:
-            logger.info(f"Found pending transcription job {job['id']} for video {job['video_id']}")
-            queue_manager.add_job(job)
+        jobs = get_all_pending_transcription_jobs_api()
+        if jobs:
+            logger.info(f"Found {len(jobs)} pending transcription jobs")
+            for job in jobs:
+                logger.info(f"Adding transcription job {job['id']} for video {job['video_id']} to queue")
+                queue_manager.add_job(job)
+        else:
+            logger.info("No pending transcription jobs found")
         
         # Start consuming messages
         logger.info("Waiting for events...")

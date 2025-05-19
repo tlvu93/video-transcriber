@@ -387,6 +387,31 @@ async def get_next_transcription_job_endpoint(db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No pending transcription jobs")
     return job
 
+@app.get("/transcription-jobs", response_model=List[TranscriptionJobResponse])
+async def get_transcription_jobs(status: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Get all transcription jobs, optionally filtered by status.
+    Used by the transcription worker.
+    
+    Args:
+        status: Optional status to filter by
+        db: Database session
+        
+    Returns:
+        List of transcription jobs
+    """
+    query = db.query(TranscriptionJob)
+    
+    if status:
+        query = query.filter(TranscriptionJob.status == status)
+    
+    jobs = query.order_by(TranscriptionJob.created_at).all()
+    
+    if not jobs and status:
+        raise HTTPException(status_code=404, detail=f"No transcription jobs with status: {status}")
+    
+    return jobs
+
 @app.get("/transcription-jobs/{job_id}", response_model=TranscriptionJobResponse)
 async def get_transcription_job(job_id: str, db: Session = Depends(get_db)):
     """
