@@ -1,7 +1,16 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 
 const VideoPlayer = ({ videoUrl, currentTime, onTimeUpdate }) => {
   const videoRef = useRef(null);
+  const [isPortrait, setIsPortrait] = useState(false);
+
+  // Detect if video is portrait (vertical) when metadata is loaded
+  const handleMetadataLoaded = () => {
+    if (videoRef.current) {
+      const { videoWidth, videoHeight } = videoRef.current;
+      setIsPortrait(videoHeight > videoWidth);
+    }
+  };
 
   // Seek to the specified time when currentTime changes
   useEffect(() => {
@@ -21,14 +30,15 @@ const VideoPlayer = ({ videoUrl, currentTime, onTimeUpdate }) => {
   };
 
   return (
-    <div className="w-full bg-black rounded-lg overflow-hidden shadow-lg">
+    <div className="w-full bg-black rounded-lg overflow-hidden shadow-lg flex justify-center">
       <video
         ref={videoRef}
-        className="w-full"
+        className={isPortrait ? "max-h-[70vh] w-auto" : "w-full"}
         src={videoUrl}
         controls
         autoPlay
         onTimeUpdate={handleTimeUpdate}
+        onLoadedMetadata={handleMetadataLoaded}
       >
         Your browser does not support the video tag.
       </video>
