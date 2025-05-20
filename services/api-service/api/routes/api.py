@@ -368,6 +368,14 @@ async def create_transcription_job_endpoint(
     # Create a transcription job
     job = create_transcription_job(job_data.video_id, db)
     
+    # Publish job status changed event
+    try:
+        rabbitmq_client.connect()
+        publish_job_status_changed_event(rabbitmq_client, "transcription", str(job.id), "pending")
+        logger.info(f"Published job.status.changed event for transcription job {job.id}")
+    except Exception as e:
+        logger.error(f"Error publishing event: {str(e)}")
+    
     return job
 
 @app.get("/transcription-jobs/next", response_model=Optional[TranscriptionJobResponse])
@@ -386,6 +394,31 @@ async def get_next_transcription_job_endpoint(db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail="No pending transcription jobs")
     return job
+
+@app.get("/transcription-jobs", response_model=List[TranscriptionJobResponse])
+async def get_transcription_jobs(status: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Get all transcription jobs, optionally filtered by status.
+    Used by the transcription worker.
+    
+    Args:
+        status: Optional status to filter by
+        db: Database session
+        
+    Returns:
+        List of transcription jobs
+    """
+    query = db.query(TranscriptionJob)
+    
+    if status:
+        query = query.filter(TranscriptionJob.status == status)
+    
+    jobs = query.order_by(TranscriptionJob.created_at).all()
+    
+    if not jobs and status:
+        raise HTTPException(status_code=404, detail=f"No transcription jobs with status: {status}")
+    
+    return jobs
 
 @app.get("/transcription-jobs/{job_id}", response_model=TranscriptionJobResponse)
 async def get_transcription_job(job_id: str, db: Session = Depends(get_db)):
@@ -931,11 +964,20 @@ def download_video(video_id: str, request: Request, db: Session = Depends(get_db
                 remaining -= len(chunk)
     
     # Create response headers
+    # Use RFC 6266/5987 encoding for the filename to handle non-Latin-1 characters
+    import urllib.parse
+    
+    # Regular ASCII filename for backward compatibility
+    ascii_filename = video.filename.encode('ascii', 'replace').decode('ascii')
+    
+    # UTF-8 encoded filename with proper format: filename*=UTF-8''encoded-filename
+    utf8_filename = urllib.parse.quote(video.filename.encode('utf-8'))
+    
     headers = {
         "Content-Range": f"bytes {start_byte}-{end_byte}/{file_size}",
         "Accept-Ranges": "bytes",
         "Content-Length": str(content_length),
-        "Content-Disposition": f'attachment; filename="{video.filename}"',
+        "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{utf8_filename}",
     }
     
     # Determine the media type based on file extension

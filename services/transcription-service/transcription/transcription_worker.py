@@ -4,6 +4,7 @@ import os
 import whisper
 import traceback
 import requests
+import threading
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -34,8 +35,9 @@ logger = logging.getLogger('transcription_worker')
 # Initialize RabbitMQ client
 rabbitmq_client = RabbitMQClient()
 
-# Global model instance
+# Global model instance and lock
 model = None
+model_lock = threading.Lock()
 
 def load_whisper_model():
     """Load the Whisper model."""
@@ -144,7 +146,9 @@ def process_transcription_job(job_id: str) -> bool:
         # Transcribe video
         logger.info(f"Transcribing video: {video['filename']}")
         try:
-            result = whisper_model.transcribe(filepath, verbose=False)
+            # Use a lock to ensure only one thread uses the model at a time
+            with model_lock:
+                result = whisper_model.transcribe(filepath, verbose=False)
             transcript_text = result["text"]
             logger.info(f"Transcription completed, length: {len(transcript_text)} characters")
         except RuntimeError as e:

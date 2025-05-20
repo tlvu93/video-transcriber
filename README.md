@@ -1,10 +1,140 @@
 # Video Transcriber
 
-A service for transcribing and summarizing videos using AI.
+A microservices-based application for automatic video transcription and summarization.
 
-## Quick Start
+## Overview
 
-The easiest way to use the application is through the CLI:
+Video Transcriber is a comprehensive solution for processing video files, generating accurate transcriptions, and creating AI-powered summaries. The system uses a microservices architecture with message-based communication for scalable and resilient video processing.
+
+## Features
+
+- **Automatic Video Detection**: Monitors directories for new video files
+- **Speech-to-Text Transcription**: Converts spoken content to text using Whisper
+- **AI-Powered Summarization**: Generates concise summaries using Ollama LLM
+- **Web Interface**: User-friendly frontend for viewing videos, transcripts, and summaries
+- **API Access**: RESTful API for programmatic access to all features
+- **Job Queue System**: Efficient processing of multiple videos
+- **User Authentication**: Secure access control
+
+## Architecture
+
+The application follows a microservices architecture with the following components:
+
+```mermaid
+graph TD
+    User[User]
+    FileSystem[File System]
+    Watcher[Watcher Service]
+    API[API Service]
+    TranscriptionWorker[Transcription Service]
+    SummarizationWorker[Summarization Service]
+    RabbitMQ[RabbitMQ]
+    Postgres[(PostgreSQL DB)]
+    Ollama[Ollama LLM]
+    Frontend[Frontend]
+    Whisper[Whisper Model]
+
+    User -->|Uploads video| FileSystem
+    User -->|Views results| Frontend
+
+    FileSystem -->|New video detected| Watcher
+    Watcher -->|Register video| API
+    Watcher -->|Publish video.created event| RabbitMQ
+
+    API -->|Store video metadata| Postgres
+    API -->|Create transcription job| Postgres
+    API -->|Publish job.status.changed event| RabbitMQ
+
+    TranscriptionWorker -->|Get next job| API
+    TranscriptionWorker -->|Read video file| FileSystem
+    TranscriptionWorker -->|Use Whisper model| Whisper
+    TranscriptionWorker -->|Store transcript| API
+    TranscriptionWorker -->|Update job status| API
+    TranscriptionWorker -->|Publish transcription.created event| RabbitMQ
+
+    SummarizationWorker -->|Get next job| API
+    SummarizationWorker -->|Read transcript| Postgres
+    SummarizationWorker -->|Use LLM for summarization| Ollama
+    SummarizationWorker -->|Store summary| API
+    SummarizationWorker -->|Update job status| API
+    SummarizationWorker -->|Publish summary.created event| RabbitMQ
+
+    Frontend -->|Fetch video data| API
+    Frontend -->|Fetch transcript data| API
+    Frontend -->|Fetch summary data| API
+    Frontend -->|Stream video| API
+
+    RabbitMQ -->|video.created event| TranscriptionWorker
+    RabbitMQ -->|job.status.changed event| TranscriptionWorker
+    RabbitMQ -->|transcription.created event| SummarizationWorker
+    RabbitMQ -->|job.status.changed event| SummarizationWorker
+    RabbitMQ -->|job.status.changed event| API
+
+    Postgres -->|Provide data| API
+```
+
+### Services
+
+- **API Service**: HTTP API for video management, transcript/summary retrieval, and job monitoring
+- **Transcription Service**: Processes videos and generates transcripts using Whisper
+- **Summarization Service**: Creates summaries from transcripts using Ollama LLM
+- **Watcher Service**: Monitors directories for new video files
+- **Frontend**: React-based web interface for user interaction
+
+### Communication
+
+The system uses a combination of two approaches for service communication:
+
+1. **Event-Driven (Push Model)**: Services subscribe to specific events via RabbitMQ
+2. **Polling (Pull Model)**: Services periodically check the API for pending jobs
+
+## Installation
+
+### Prerequisites
+
+- Docker and Docker Compose
+- Git
+
+### Quick Start
+
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/yourusername/video-transcriber.git
+   cd video-transcriber
+   ```
+
+2. Initialize the project:
+
+   ```bash
+   ./vt init
+   ```
+
+3. Start the services:
+
+   ```bash
+   ./vt docker start
+   ```
+
+4. Create an admin user:
+
+   ```bash
+   ./vt user create-admin
+   ```
+
+5. Access the web interface at http://localhost:5555
+
+## Usage
+
+### Processing Videos
+
+1. Place video files in the `data/videos` directory
+2. The system will automatically detect, transcribe, and summarize the videos
+3. View the results in the web interface
+
+### CLI Commands
+
+The project includes a comprehensive CLI for management:
 
 ```bash
 # Initialize the project
@@ -26,79 +156,79 @@ The easiest way to use the application is through the CLI:
 ./vt docker logs
 ```
 
-## CLI Documentation
+For more detailed CLI documentation, see [vt-cli/SCRIPTS.md](vt-cli/SCRIPTS.md).
 
-The Video Transcriber CLI provides a unified interface for managing the application. For detailed documentation, see:
+## API Endpoints
 
-- [Quick Start Guide](vt-cli/README-SCRIPTS.md)
-- [Detailed Documentation](vt-cli/SCRIPTS.md)
+### Authentication
 
-## Getting Help
+- `POST /auth/token`: Get an access token
+- `POST /auth/register`: Register a new user (admin only)
+- `GET /auth/me`: Get current user information
 
-All scripts provide help information when run with the `-h` or `--help` flag:
+### Videos
 
-```bash
-./vt help
-./vt docker -h
-./vt db -h
+- `POST /videos/upload`: Upload a new video
+- `GET /videos`: List all videos
+- `GET /videos/{video_id}`: Get video details
+- `DELETE /videos/{video_id}`: Delete a video
+
+### Transcripts
+
+- `GET /transcripts`: List all transcripts
+- `GET /transcripts/{transcript_id}`: Get transcript details
+- `GET /transcripts/video/{video_id}`: Get transcript for a video
+
+### Summaries
+
+- `GET /summaries`: List all summaries
+- `GET /summaries/{summary_id}`: Get summary details
+- `GET /summaries/transcript/{transcript_id}`: Get summary for a transcript
+
+### Jobs
+
+- `GET /jobs`: List all jobs
+- `GET /jobs/{job_id}`: Get job details
+- `GET /jobs/status/{status}`: List jobs by status
+
+## Development
+
+### Project Structure
+
+```
+video-transcriber/
+├── common/                 # Shared code between services
+├── data/                   # Data storage
+│   ├── videos/             # Video files
+│   ├── transcriptions/     # Generated transcripts
+│   └── summaries/          # Generated summaries
+├── frontend/               # React frontend
+├── services/               # Backend services
+│   ├── api-service/        # HTTP API
+│   ├── transcription-service/ # Video transcription
+│   ├── summarization-service/ # Transcript summarization
+│   └── watcher-service/    # File system monitoring
+├── vt-cli/                 # CLI tools
+└── docker-compose.yml      # Docker configuration
 ```
 
-## Project Structure
+### Local Development
 
-- `api-service/`: API service for the application
-- `common/`: Common code shared between services
-- `data/`: Data directories for videos, transcriptions, and summaries
-- `migrations/`: Database migration scripts
-- `summarization-service/`: Service for summarizing transcriptions
-- `transcription-service/`: Service for transcribing videos
-- `vt-cli/`: CLI tools for managing the application
+For local development of individual services, refer to the README.md in each service directory.
 
 ## Configuration
 
-### Transcription Service Queue
+The application can be configured through environment variables:
 
-The transcription service now includes a queue system to handle multiple transcription requests efficiently. This prevents the service from being overwhelmed when many requests come in simultaneously.
+- `VIDEO_DIRS`: Directories to monitor for videos (default: `/app/data/videos`)
+- `MAX_WORKERS`: Maximum number of transcription worker threads (default: `2`)
+- `LLM_MODEL`: Ollama model to use for summarization (default: `deepseek-r1`)
+- `LLM_HOST`: URL of the Ollama API (default: `http://ollama:11434/api/generate`)
 
-You can configure the queue with the following environment variables:
+## License
 
-- `MAX_WORKERS`: Maximum number of worker threads to process transcription jobs concurrently (default: 2)
-- `POLL_INTERVAL`: Interval in seconds between polling for new jobs (default: 5)
+[MIT License](LICENSE)
 
-Example:
+## Contributing
 
-```bash
-# Start with 4 worker threads
-MAX_WORKERS=4 ./vt docker start
-
-# Or set environment variables before starting
-export MAX_WORKERS=4
-export POLL_INTERVAL=10
-./vt docker start
-```
-
-You can also modify these values directly in the `docker-compose.yml` file.
-
-### Video Watcher Service
-
-The watcher service monitors video directories for new video files and automatically processes them.
-
-#### Nested Folders Support
-
-The watcher service now supports detecting videos in nested folders. Any video files placed in subdirectories of the configured video directories will be automatically detected and processed.
-
-#### Multiple Video Directories
-
-You can configure multiple video directories to be watched by setting the `VIDEO_DIRS` environment variable. Separate multiple directories with commas.
-
-Example:
-
-```bash
-# Watch multiple directories
-VIDEO_DIRS=/app/data/videos,/app/data/external_videos ./vt docker start
-
-# Or set environment variables before starting
-export VIDEO_DIRS=/app/data/videos,/app/data/external_videos
-./vt docker start
-```
-
-By default, the watcher service monitors the `/app/data/videos` directory inside the container (which maps to `./data/videos` on your host machine).
+Contributions are welcome! Please feel free to submit a Pull Request.
