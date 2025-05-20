@@ -106,23 +106,9 @@ The system uses a combination of two approaches for service communication:
 
 2. Initialize the project:
 
-   ```bash
-   ./vt init
-   ```
-
-3. Start the services:
-
-   ```bash
-   ./vt docker start
-   ```
-
-4. Create an admin user:
-
-   ```bash
-   ./vt user create-admin
-   ```
-
-5. Access the web interface at http://localhost:5555
+```
+docker-compose up
+```
 
 ## Usage
 
@@ -131,32 +117,6 @@ The system uses a combination of two approaches for service communication:
 1. Place video files in the `data/videos` directory
 2. The system will automatically detect, transcribe, and summarize the videos
 3. View the results in the web interface
-
-### CLI Commands
-
-The project includes a comprehensive CLI for management:
-
-```bash
-# Initialize the project
-./vt init
-
-# Start Docker services
-./vt docker start
-
-# Check status
-./vt docker status
-
-# Create an admin user
-./vt user create-admin
-
-# Run database migrations
-./vt db migrate
-
-# View logs
-./vt docker logs
-```
-
-For more detailed CLI documentation, see [vt-cli/SCRIPTS.md](vt-cli/SCRIPTS.md).
 
 ## API Endpoints
 
@@ -224,11 +184,3 @@ The application can be configured through environment variables:
 - `MAX_WORKERS`: Maximum number of transcription worker threads (default: `2`)
 - `LLM_MODEL`: Ollama model to use for summarization (default: `deepseek-r1`)
 - `LLM_HOST`: URL of the Ollama API (default: `http://ollama:11434/api/generate`)
-
-## License
-
-[MIT License](LICENSE)
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
