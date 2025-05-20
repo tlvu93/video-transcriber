@@ -1,10 +1,10 @@
 # Video Transcriber
 
-A microservices-based application for automatic video transcription and summarization.
+Prototype application for automatic video transcription and summarization.
 
 ## Overview
 
-Video Transcriber is a comprehensive solution for processing video files, generating accurate transcriptions, and creating AI-powered summaries. The system uses a microservices architecture with message-based communication for scalable and resilient video processing.
+Video Transcriber is a hobby project for processing video files, generating transcriptions, and creating summaries.
 
 ## Features
 
@@ -14,7 +14,6 @@ Video Transcriber is a comprehensive solution for processing video files, genera
 - **Web Interface**: User-friendly frontend for viewing videos, transcripts, and summaries
 - **API Access**: RESTful API for programmatic access to all features
 - **Job Queue System**: Efficient processing of multiple videos
-- **User Authentication**: Secure access control
 
 ## Architecture
 
@@ -160,15 +159,12 @@ video-transcriber/
 ├── common/                 # Shared code between services
 ├── data/                   # Data storage
 │   ├── videos/             # Video files
-│   ├── transcriptions/     # Generated transcripts
-│   └── summaries/          # Generated summaries
 ├── frontend/               # React frontend
 ├── services/               # Backend services
 │   ├── api-service/        # HTTP API
 │   ├── transcription-service/ # Video transcription
 │   ├── summarization-service/ # Transcript summarization
 │   └── watcher-service/    # File system monitoring
-├── vt-cli/                 # CLI tools
 └── docker-compose.yml      # Docker configuration
 ```
 
