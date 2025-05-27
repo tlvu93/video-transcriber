@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import pika
+import time
 from typing import Dict, Any, Callable, Optional
 
 # Configure logging
@@ -40,6 +41,10 @@ class RabbitMQClient:
         
         # Define exchange names
         self.event_exchange = 'video_transcriber_events'
+        
+        # Connection retry settings
+        self.max_retries = 3
+        self.retry_delay = 5
     
     def connect(self) -> None:
         """
@@ -48,42 +53,62 @@ class RabbitMQClient:
         if self.connection is not None and self.connection.is_open:
             return
         
-        try:
-            # Create connection parameters
-            credentials = pika.PlainCredentials(self.user, self.password)
-            parameters = pika.ConnectionParameters(
-                host=self.host,
-                credentials=credentials,
-                heartbeat=600,
-                blocked_connection_timeout=300
-            )
-            
-            # Connect to RabbitMQ
-            self.connection = pika.BlockingConnection(parameters)
-            self.channel = self.connection.channel()
-            
-            # Declare exchanges
-            self.channel.exchange_declare(
-                exchange=self.event_exchange,
-                exchange_type='topic',
-                durable=True
-            )
-            
-            logger.info(f"Connected to RabbitMQ at {self.host}")
-        
-        except Exception as e:
-            logger.error(f"Error connecting to RabbitMQ: {str(e)}")
-            raise
+        for attempt in range(self.max_retries):
+            try:
+                # Create connection parameters with improved settings
+                credentials = pika.PlainCredentials(self.user, self.password)
+                parameters = pika.ConnectionParameters(
+                    host=self.host,
+                    credentials=credentials,
+                    heartbeat=600,
+                    blocked_connection_timeout=300,
+                    # Reduce frame size to avoid frame_too_large errors
+                    frame_max=131072,  # 128KB instead of default 1MB
+                    # Connection timeout settings
+                    connection_attempts=3,
+                    retry_delay=2,
+                    socket_timeout=10
+                )
+                
+                # Connect to RabbitMQ
+                self.connection = pika.BlockingConnection(parameters)
+                self.channel = self.connection.channel()
+                
+                # Declare exchanges
+                self.channel.exchange_declare(
+                    exchange=self.event_exchange,
+                    exchange_type='topic',
+                    durable=True
+                )
+                
+                logger.info(f"Connected to RabbitMQ at {self.host}")
+                return
+                
+            except Exception as e:
+                logger.error(f"Error connecting to RabbitMQ (attempt {attempt + 1}/{self.max_retries}): {str(e)}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                else:
+                    raise
     
     def close(self) -> None:
         """
         Close the connection to RabbitMQ.
         """
-        if self.connection is not None and self.connection.is_open:
-            self.connection.close()
+        try:
+            if self.connection is not None and self.connection.is_open:
+                self.connection.close()
+                logger.info("Closed connection to RabbitMQ")
+        except Exception as e:
+            logger.error(f"Error closing RabbitMQ connection: {str(e)}")
+        finally:
             self.connection = None
             self.channel = None
-            logger.info("Closed connection to RabbitMQ")
+    
+    def _ensure_connection(self) -> None:
+        """Ensure we have a valid connection."""
+        if self.connection is None or not self.connection.is_open:
+            self.connect()
     
     def publish_event(self, event_type: str, payload: Dict[str, Any]) -> None:
         """
@@ -93,40 +118,42 @@ class RabbitMQClient:
             event_type: Type of event (e.g., 'video.created')
             payload: Event payload as a dictionary
         """
-        if self.connection is None or not self.connection.is_open:
-            self.connect()
-        
-        try:
-            # Convert payload to JSON
-            message = json.dumps(payload)
-            
-            # Publish message
-            self.channel.basic_publish(
-                exchange=self.event_exchange,
-                routing_key=event_type,
-                body=message,
-                properties=pika.BasicProperties(
-                    delivery_mode=2,  # Make message persistent
-                    content_type='application/json'
+        for attempt in range(self.max_retries):
+            try:
+                self._ensure_connection()
+                
+                # Limit payload size to prevent frame_too_large errors
+                message = json.dumps(payload)
+                if len(message) > 100000:  # 100KB limit
+                    # Truncate large payloads
+                    if 'traceback' in payload:
+                        payload['traceback'] = payload['traceback'][:1000] + "... (truncated)"
+                    if 'error_details' in payload and isinstance(payload['error_details'], dict):
+                        if 'traceback' in payload['error_details']:
+                            payload['error_details']['traceback'] = payload['error_details']['traceback'][:1000] + "... (truncated)"
+                    message = json.dumps(payload)
+                
+                # Publish message
+                self.channel.basic_publish(
+                    exchange=self.event_exchange,
+                    routing_key=event_type,
+                    body=message,
+                    properties=pika.BasicProperties(
+                        delivery_mode=2,  # Make message persistent
+                        content_type='application/json'
+                    )
                 )
-            )
-            
-            logger.info(f"Published event {event_type}: {message}")
-        
-        except Exception as e:
-            logger.error(f"Error publishing event {event_type}: {str(e)}")
-            # Try to reconnect and publish again
-            self.close()
-            self.connect()
-            self.channel.basic_publish(
-                exchange=self.event_exchange,
-                routing_key=event_type,
-                body=json.dumps(payload),
-                properties=pika.BasicProperties(
-                    delivery_mode=2,
-                    content_type='application/json'
-                )
-            )
+                
+                logger.info(f"Published event {event_type}")
+                return
+                
+            except Exception as e:
+                logger.error(f"Error publishing event {event_type} (attempt {attempt + 1}/{self.max_retries}): {str(e)}")
+                self.close()  # Force reconnection on next attempt
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                else:
+                    raise
     
     def subscribe_to_event(self, event_type: str, callback: Callable, queue_name: Optional[str] = None) -> None:
         """
@@ -137,8 +164,7 @@ class RabbitMQClient:
             callback: Function to call when an event is received
             queue_name: Name of the queue to create (defaults to a generated name)
         """
-        if self.connection is None or not self.connection.is_open:
-            self.connect()
+        self._ensure_connection()
         
         try:
             # Declare queue
@@ -190,8 +216,7 @@ class RabbitMQClient:
         Start consuming messages.
         This method blocks until stop_consuming is called.
         """
-        if self.connection is None or not self.connection.is_open:
-            self.connect()
+        self._ensure_connection()
         
         try:
             logger.info("Starting to consume messages")
@@ -209,9 +234,12 @@ class RabbitMQClient:
         """
         Stop consuming messages.
         """
-        if self.channel is not None:
-            self.channel.stop_consuming()
-            logger.info("Stopped consuming messages")
+        try:
+            if self.channel is not None:
+                self.channel.stop_consuming()
+                logger.info("Stopped consuming messages")
+        except Exception as e:
+            logger.error(f"Error stopping message consumption: {str(e)}")
 
 # Helper functions for common events
 

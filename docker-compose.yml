@@ -95,16 +95,20 @@ services:
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=videotranscriber
       - RABBITMQ_PASSWORD=videotranscriber
-      - MAX_WORKERS=${MAX_WORKERS:-2}
+      - MAX_WORKERS=${MAX_WORKERS:-1}
       - VIDEO_DIRS=${VIDEO_DIRS:-/app/data/videos}
     command:
-      [
-        "sh",
-        "-c",
-        "pip install pika==1.3.2 && python -m transcription.main --max-workers=${MAX_WORKERS:-2}",
-      ]
+      ["python", "-m", "transcription.main", "--max-workers=${MAX_WORKERS:-1}"]
     working_dir: /app/transcription-service
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+        reservations:
+          memory: 2G
+          cpus: "1.0"
     logging:
       driver: "json-file"
       options:
@@ -210,12 +214,22 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=videotranscriber
       - RABBITMQ_DEFAULT_PASS=videotranscriber
+      # Configure frame size limits to prevent frame_too_large errors
+      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit frame_max 131072
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
     logging:
       driver: "json-file"
       options:

@@ -13,17 +13,19 @@ COPY common /app/common
 # Copy API service (needed by watcher)
 COPY services/api-service /app/api-service
 
-# Install watcher dependencies
-COPY services/watcher-service /app/watcher-service
+# Install required packages
 RUN pip install --no-cache-dir -U pip setuptools wheel
-RUN pip install --no-cache-dir watchdog requests pika==1.3.2
-RUN pip install --no-cache-dir -r /app/common/requirements.txt
+
+# Install common package first
 RUN pip install --no-cache-dir -e /app/common
 
-# Fix the dependency path in pyproject.toml
+# Copy watcher service
+COPY services/watcher-service /app/watcher-service
+
+# Fix the dependency path in pyproject.toml to point to the correct location in container
 RUN sed -i 's|file://../common|file:///app/common|g' /app/watcher-service/pyproject.toml
 
-# Now install the watcher service
+# Install the watcher service with all dependencies from pyproject.toml
 RUN pip install --no-cache-dir -e /app/watcher-service
 
 # Create a .pth file to ensure the common package is in the Python path

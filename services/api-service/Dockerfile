@@ -15,12 +15,15 @@ COPY services/api-service /app/api-service
 
 # Install required packages
 RUN pip install --no-cache-dir -U pip setuptools wheel
-RUN pip install --no-cache-dir fastapi uvicorn sqlalchemy pydantic psycopg2-binary python-multipart pika==1.3.2
-RUN pip install --no-cache-dir -r /app/common/requirements.txt
+
+# Install common package first
 RUN pip install --no-cache-dir -e /app/common
 
-# Fix the dependency path in pyproject.toml
+# Fix the dependency path in pyproject.toml to point to the correct location in container
 RUN sed -i 's|file://../common|file:///app/common|g' /app/api-service/pyproject.toml
+
+# Install the API service with all dependencies from pyproject.toml
+RUN pip install --no-cache-dir -e /app/api-service
 
 # Create a .pth file to ensure the common package is in the Python path
 RUN echo "/app" > $(python -c "import site; print(site.getsitepackages()[0])")/app.pth

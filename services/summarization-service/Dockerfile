@@ -10,19 +10,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy common code
 COPY common /app/common
 
-# Install Python dependencies
+# Install required packages
 RUN pip install --no-cache-dir -U pip setuptools wheel
-RUN pip install --no-cache-dir requests langchain langchain-core nltk pika==1.3.2
-RUN pip install --no-cache-dir -r /app/common/requirements.txt
+
+# Install common package first
 RUN pip install --no-cache-dir -e /app/common
 
 # Copy the summarization service code
 COPY services/summarization-service /app/summarization-service
 
-# Fix the dependency path in pyproject.toml
+# Fix the dependency path in pyproject.toml to point to the correct location in container
 RUN sed -i 's|file://../common|file:///app/common|g' /app/summarization-service/pyproject.toml
 
-# Now install the summarization service
+# Install the summarization service with all dependencies from pyproject.toml
 RUN pip install --no-cache-dir -e /app/summarization-service
 
 # Create a .pth file to ensure the common package is in the Python path

@@ -1,10 +1,10 @@
-import whisper
 import os
 import sys
 import logging
 import traceback
 import requests
 import json
+import torch
 from pathlib import Path
 
 # Add the project root directory to the Python path
@@ -25,15 +25,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger('processor')
 
-# Initialize RabbitMQ client
-rabbitmq_client = RabbitMQClient()
-
-logger.info("Loading Whisper model...")
-model = whisper.load_model("base")
-logger.info("Whisper model loaded successfully")
-
+# Create video directory
 os.makedirs(VIDEO_DIR, exist_ok=True)
-
 logger.info(f"Video directory: {VIDEO_DIR}")
 
 def create_transcript_api(video_id, content, segments=None):
@@ -49,7 +42,7 @@ def create_transcript_api(video_id, content, segments=None):
             "segments": segments or []
         }
         
-        response = requests.post(url, json=data)
+        response = requests.post(url, json=data, timeout=30)
         response.raise_for_status()
         
         transcript = response.json()
@@ -61,20 +54,22 @@ def create_transcript_api(video_id, content, segments=None):
             "transcript_id": transcript['id']
         }
         
-        job_response = requests.post(job_url, json=job_data)
+        job_response = requests.post(job_url, json=job_data, timeout=30)
         job_response.raise_for_status()
         
         job = job_response.json()
         logger.info(f"Created summarization job {job['id']} for transcript {transcript['id']} via API")
         
-        # Publish transcript created event
+        # Publish transcript created event with connection management
         try:
+            rabbitmq_client = RabbitMQClient()
             rabbitmq_client.connect()
             publish_transcription_created_event(
                 rabbitmq_client, 
                 str(transcript['id']), 
                 str(video_id)
             )
+            rabbitmq_client.close()
             logger.info(f"Published transcription.created event for transcript {transcript['id']}")
         except Exception as e:
             logger.error(f"Error publishing event: {str(e)}")
@@ -106,14 +101,15 @@ def update_job_status_api(job_id, status, processing_time=None, error_details=No
             url = f"{API_URL}/transcription-jobs/{job_id}/start"
             data = {}
         
-        response = requests.post(url, json=data)
+        response = requests.post(url, json=data, timeout=30)
         response.raise_for_status()
         
         job = response.json()
         logger.info(f"Updated transcription job {job_id} status to {status}")
         
-        # Publish job status changed event
+        # Publish job status changed event with connection management
         try:
+            rabbitmq_client = RabbitMQClient()
             rabbitmq_client.connect()
             publish_job_status_changed_event(
                 rabbitmq_client, 
@@ -121,6 +117,7 @@ def update_job_status_api(job_id, status, processing_time=None, error_details=No
                 str(job_id), 
                 status
             )
+            rabbitmq_client.close()
             logger.info(f"Published job.status.changed event for job {job_id}")
         except Exception as e:
             logger.error(f"Error publishing event: {str(e)}")
@@ -132,72 +129,38 @@ def update_job_status_api(job_id, status, processing_time=None, error_details=No
         logger.error(f"Exception traceback: {traceback.format_exc()}")
         return None
 
-def process_video(filepath):
+def find_video_file(filepath):
+    """Find video file in configured directories."""
     logger.info(f"Processing video: {filepath}")
-    try:
-        # Check if file exists and is accessible
-        if not os.path.exists(filepath):
-            # If file doesn't exist at the expected path, try to find it in all video directories and their subdirectories
-            filename = os.path.basename(filepath)
-            logger.info(f"File not found at {filepath}, searching in all video directories for {filename}...")
-            found = False
-            
-            # Search in all configured video directories
-            for video_dir in VIDEO_DIRS:
-                # First check directly in the video directory
-                test_path = os.path.join(video_dir, filename)
-                if os.path.exists(test_path):
-                    filepath = test_path
-                    logger.info(f"Found video file at: {filepath}")
-                    found = True
-                    break
-                
-                # Then search in subdirectories
-                for root, _, files in os.walk(video_dir):
-                    if filename in files:
-                        filepath = os.path.join(root, filename)
-                        logger.info(f"Found video file at: {filepath}")
-                        found = True
-                        break
-                
-                if found:
-                    break
-            
-            if not found:
-                logger.error(f"❌ File not found: {filename}")
-                return None, None, None
-            
-        # Get video metadata
-        try:
-            logger.info(f"Getting metadata for: {os.path.basename(filepath)}")
-            metadata = get_video_metadata(filepath)
-            logger.info(f"Metadata retrieved successfully")
-        except Exception as e:
-            logger.error(f"⚠️ Error getting metadata: {str(e)}")
-            logger.error(f"Exception traceback: {traceback.format_exc()}")
-            metadata = {"error": str(e)}
+    
+    # Check if file exists and is accessible
+    if os.path.exists(filepath):
+        return filepath
+    
+    # If file doesn't exist at the expected path, try to find it in all video directories and their subdirectories
+    filename = os.path.basename(filepath)
+    logger.info(f"File not found at {filepath}, searching in all video directories for {filename}...")
+    
+    # Search in all configured video directories
+    for video_dir in VIDEO_DIRS:
+        # First check directly in the video directory
+        test_path = os.path.join(video_dir, filename)
+        if os.path.exists(test_path):
+            logger.info(f"Found video file at: {test_path}")
+            return test_path
         
-        logger.info(f"🔊 Transcribing: {os.path.basename(filepath)}")
-        
-        # Transcribe video
-        try:
-            logger.info("Starting Whisper transcription...")
-            result = model.transcribe(filepath, verbose=False)
-            transcript_text = result["text"]
-            logger.info(f"Transcription completed, length: {len(transcript_text)} characters")
-        except Exception as e:
-            logger.error(f"❌ Transcription error: {str(e)}")
-            logger.error(f"Exception traceback: {traceback.format_exc()}")
-            return None, metadata, None
-        
-        return transcript_text, metadata, None
-        
-    except Exception as e:
-        logger.error(f"❌ Error processing video: {str(e)}")
-        logger.error(f"Exception traceback: {traceback.format_exc()}")
-        return None, None, None
+        # Then search in subdirectories
+        for root, _, files in os.walk(video_dir):
+            if filename in files:
+                found_path = os.path.join(root, filename)
+                logger.info(f"Found video file at: {found_path}")
+                return found_path
+    
+    logger.error(f"❌ File not found: {filename}")
+    return None
 
 def format_srt_timestamp(seconds):
+    """Format seconds as SRT timestamp."""
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
