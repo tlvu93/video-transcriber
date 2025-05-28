@@ -45,28 +45,64 @@ def get_whisperx_model():
             _device = "cuda" if torch.cuda.is_available() else "cpu"
             logger.info(f"Using device: {_device}")
             
-            logger.info("Loading WhisperX model...")
-            try:
-                # Use a more compatible approach for loading WhisperX model
-                _model = whisperx.load_model(
-                    "large-v2", 
-                    _device, 
-                    compute_type="float16" if _device == "cuda" else "int8",
-                    language="auto"  # Explicitly set language parameter
-                )
-                _model_loaded = True
-                logger.info("WhisperX model loaded successfully")
-            except Exception as e:
-                logger.error(f"Failed to load WhisperX model: {str(e)}")
-                # Try with a simpler model configuration as fallback
+            # Log available GPU memory if using CUDA
+            if _device == "cuda":
                 try:
-                    logger.info("Trying fallback model configuration...")
-                    _model = whisperx.load_model("base", _device)
+                    free_memory, total_memory = torch.cuda.mem_get_info()
+                    free_memory_gb = free_memory / (1024**3)
+                    total_memory_gb = total_memory / (1024**3)
+                    logger.info(f"GPU memory: {free_memory_gb:.2f}GB free / {total_memory_gb:.2f}GB total")
+                except Exception as e:
+                    logger.warning(f"Could not get GPU memory info: {str(e)}")
+            
+            # Try loading models in order of preference with fallbacks
+            models_to_try = [
+                {"name": "large-v2", "compute_type": "float16" if _device == "cuda" else "int8"},
+                {"name": "medium", "compute_type": "float16" if _device == "cuda" else "int8"},
+                {"name": "small", "compute_type": "float16" if _device == "cuda" else "int8"},
+                {"name": "base", "compute_type": "float16" if _device == "cuda" else "int8"},
+                {"name": "tiny", "compute_type": "int8"}  # Last resort
+            ]
+            
+            last_error = None
+            for model_config in models_to_try:
+                try:
+                    logger.info(f"Loading WhisperX model '{model_config['name']}' with compute_type={model_config['compute_type']}...")
+                    
+                    # Force garbage collection before loading model
+                    gc.collect()
+                    if _device == "cuda":
+                        torch.cuda.empty_cache()
+                    
+                    _model = whisperx.load_model(
+                        model_config["name"],
+                        _device,
+                        compute_type=model_config["compute_type"],
+                        # language="de",
+                        device_index=0  # Explicitly use first GPU if multiple are available
+                    )
                     _model_loaded = True
-                    logger.info("WhisperX fallback model loaded successfully")
-                except Exception as fallback_error:
-                    logger.error(f"Fallback model also failed: {str(fallback_error)}")
-                    raise e
+                    logger.info(f"WhisperX model '{model_config['name']}' loaded successfully")
+                    break
+                except Exception as e:
+                    last_error = e
+                    error_msg = str(e)
+                    logger.warning(f"Failed to load WhisperX model '{model_config['name']}': {error_msg}")
+                    
+                    # If out of memory, try to free up memory
+                    if "CUDA out of memory" in error_msg or "device-side assert" in error_msg:
+                        logger.info("CUDA out of memory detected, trying to free up memory...")
+                        gc.collect()
+                        if _device == "cuda":
+                            torch.cuda.empty_cache()
+            
+            # If all models failed, raise the last error
+            if not _model_loaded:
+                logger.error("All WhisperX model configurations failed to load")
+                if last_error:
+                    raise RuntimeError(f"Failed to load any WhisperX model: {str(last_error)}") from last_error
+                else:
+                    raise RuntimeError("Failed to load any WhisperX model")
         
         return _model, _device
 
@@ -115,10 +151,26 @@ def find_video_file(filename: str) -> str:
     filepath = os.path.join("/app/data/videos", filename)
     
     if os.path.exists(filepath):
+        logger.info(f"Found video file at default path: {filepath}")
         return filepath
     
     # If file doesn't exist at the expected path, search in all video directories
     logger.info(f"Video file not found at {filepath}, searching in all video directories...")
+    
+    # Log all configured video directories for debugging
+    logger.info(f"Configured VIDEO_DIRS: {VIDEO_DIRS}")
+    
+    # Check if directories exist
+    for video_dir in VIDEO_DIRS:
+        if not os.path.exists(video_dir):
+            logger.warning(f"Video directory does not exist: {video_dir}")
+            try:
+                os.makedirs(video_dir, exist_ok=True)
+                logger.info(f"Created video directory: {video_dir}")
+            except Exception as e:
+                logger.error(f"Failed to create video directory {video_dir}: {str(e)}")
+        else:
+            logger.info(f"Video directory exists: {video_dir}")
     
     # Search in all configured video directories
     for video_dir in VIDEO_DIRS:
@@ -129,77 +181,184 @@ def find_video_file(filename: str) -> str:
             return test_path
         
         # Then search in subdirectories
-        for root, _, files in os.walk(video_dir):
+        for root, dirs, files in os.walk(video_dir):
+            logger.debug(f"Searching in directory: {root}, found files: {files}")
             if filename in files:
                 found_path = os.path.join(root, filename)
                 logger.info(f"Found video file at: {found_path}")
                 return found_path
     
-    raise FileNotFoundError(f"Video file not found: {filename}")
+    # If still not found, check if the filename contains a path
+    if os.path.sep in filename:
+        direct_path = filename if os.path.isabs(filename) else os.path.join(os.getcwd(), filename)
+        if os.path.exists(direct_path):
+            logger.info(f"Found video file at direct path: {direct_path}")
+            return direct_path
+    
+    error_msg = f"Video file not found: {filename}. Searched in directories: {VIDEO_DIRS}"
+    logger.error(error_msg)
+    raise FileNotFoundError(error_msg)
+
+def extract_audio_from_video(video_path: str) -> str:
+    """
+    Extract audio from video file using ffmpeg.
+    
+    Args:
+        video_path: Path to the video file
+        
+    Returns:
+        Path to the extracted audio file
+    """
+    # Create temporary audio file path with a unique name
+    audio_dir = os.path.dirname(video_path)
+    audio_filename = f"temp_audio_{os.path.basename(video_path)}_{int(time.time())}.wav"
+    audio_path = os.path.join(audio_dir, audio_filename)
+    
+    logger.info(f"Extracting audio from video: {video_path} to {audio_path}")
+    
+    try:
+        # Use subprocess to run ffmpeg
+        import subprocess
+        cmd = [
+            "ffmpeg", 
+            "-i", video_path, 
+            "-vn",  # No video
+            "-acodec", "pcm_s16le",  # PCM 16-bit little-endian format
+            "-ar", "16000",  # 16kHz sample rate
+            "-ac", "1",  # Mono
+            "-y",  # Overwrite output file if it exists
+            audio_path
+        ]
+        
+        # Run ffmpeg
+        process = subprocess.run(
+            cmd, 
+            check=True, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE
+        )
+        
+        logger.info(f"Audio extraction completed: {audio_path}")
+        return audio_path
+        
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error extracting audio with ffmpeg: {e}")
+        logger.error(f"ffmpeg stderr: {e.stderr.decode('utf-8', errors='replace')}")
+        raise ValueError(f"Failed to extract audio from video: {video_path}. The file may be corrupted or in an unsupported format.")
+    except Exception as e:
+        logger.error(f"Unexpected error during audio extraction: {str(e)}")
+        raise
 
 def transcribe_with_whisperx(filepath: str) -> tuple[str, List[Dict]]:
     """Transcribe video file using WhisperX."""
     model, device = get_whisperx_model()
+    audio_path = None
     
-    # Use a lock to ensure only one thread uses the model at a time
-    with _model_lock:
-        logger.info("Starting WhisperX transcription...")
+    try:
+        # Check if the file is a video file that needs audio extraction
+        file_ext = os.path.splitext(filepath)[1].lower()
+        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v']
         
-        try:
-            # Load audio
-            audio = whisperx.load_audio(filepath)
+        if file_ext in video_extensions:
+            logger.info(f"Detected video file format: {file_ext}")
+            audio_path = extract_audio_from_video(filepath)
+            filepath_to_process = audio_path
+        else:
+            # Assume it's already an audio file
+            logger.info(f"Using file directly (assuming audio format): {filepath}")
+            filepath_to_process = filepath
+        
+        # Use a lock to ensure only one thread uses the model at a time
+        with _model_lock:
+            logger.info("Starting WhisperX transcription...")
             
-            # Transcribe with WhisperX
-            result = model.transcribe(audio, batch_size=16)
-            transcript_text = result["text"]
-            logger.info(f"Initial transcription completed, length: {len(transcript_text)} characters")
-            
-            # Align timestamps for better accuracy
-            logger.info("Aligning timestamps...")
-            model_a, metadata_align = whisperx.load_align_model(
-                language_code=result["language"], 
-                device=device
-            )
-            result = whisperx.align(
-                result["segments"], 
-                model_a, 
-                metadata_align, 
-                audio, 
-                device, 
-                return_char_alignments=False
-            )
-            logger.info("Timestamp alignment completed")
-            
-            # Perform speaker diarization
-            logger.info("Performing speaker diarization...")
             try:
-                # Use local diarization without HuggingFace token
-                diarize_model = whisperx.DiarizationPipeline(use_auth_token=None, device=device)
-                diarize_segments = diarize_model(audio)
+                # Load audio
+                audio = whisperx.load_audio(filepath_to_process)
                 
-                # Assign speakers to segments
-                result = whisperx.assign_word_speakers(diarize_segments, result)
-                logger.info("Speaker diarization completed")
-            except Exception as diarize_error:
-                logger.warning(f"Speaker diarization failed: {str(diarize_error)}")
-                logger.info("Continuing without speaker diarization")
-            
-            # Clean up audio data to free memory
-            del audio
-            gc.collect()
-            
-            logger.info(f"WhisperX transcription completed, length: {len(transcript_text)} characters")
-            
-            return transcript_text, result.get("segments", [])
-            
-        except RuntimeError as e:
-            if "cannot reshape tensor of 0 elements" in str(e):
-                raise ValueError(f"Cannot process video file: {filepath}. The file may be corrupted or in an unsupported format.")
-            else:
+                # Check if audio is valid
+                if len(audio) == 0:
+                    raise ValueError(f"Audio file is empty or invalid: {filepath_to_process}")
+                
+                # Log audio properties
+                logger.info(f"Audio loaded successfully: length={len(audio)} samples")
+                
+                # Transcribe with WhisperX
+                result = model.transcribe(
+                    audio, 
+                    batch_size=16,
+                    language=None,  # Auto-detect language
+                    task="transcribe"
+                )
+                transcript_text = result["text"]
+                logger.info(f"Initial transcription completed, length: {len(transcript_text)} characters")
+                
+                # Skip alignment and diarization for very short transcripts
+                if len(transcript_text.strip()) < 10:
+                    logger.warning("Transcript is very short, skipping alignment and diarization")
+                    return transcript_text, result.get("segments", [])
+                
+                # Align timestamps for better accuracy
+                try:
+                    logger.info("Aligning timestamps...")
+                    model_a, metadata_align = whisperx.load_align_model(
+                        language_code=result["language"], 
+                        device=device
+                    )
+                    result = whisperx.align(
+                        result["segments"], 
+                        model_a, 
+                        metadata_align, 
+                        audio, 
+                        device, 
+                        return_char_alignments=False
+                    )
+                    logger.info("Timestamp alignment completed")
+                except Exception as align_error:
+                    logger.warning(f"Timestamp alignment failed: {str(align_error)}")
+                    logger.info("Continuing with unaligned timestamps")
+                
+                # Perform speaker diarization
+                try:
+                    logger.info("Performing speaker diarization...")
+                    diarize_model = whisperx.DiarizationPipeline(use_auth_token=None, device=device)
+                    diarize_segments = diarize_model(audio)
+                    
+                    # Assign speakers to segments
+                    result = whisperx.assign_word_speakers(diarize_segments, result)
+                    logger.info("Speaker diarization completed")
+                except Exception as diarize_error:
+                    logger.warning(f"Speaker diarization failed: {str(diarize_error)}")
+                    logger.info("Continuing without speaker diarization")
+                
+                # Clean up audio data to free memory
+                del audio
+                gc.collect()
+                
+                logger.info(f"WhisperX transcription completed, length: {len(transcript_text)} characters")
+                
+                return transcript_text, result.get("segments", [])
+                
+            except RuntimeError as e:
+                error_msg = str(e)
+                if "cannot reshape tensor of 0 elements" in error_msg:
+                    raise ValueError(f"Cannot process audio file: {filepath_to_process}. The file may be corrupted or in an unsupported format.")
+                elif "CUDA out of memory" in error_msg:
+                    raise ValueError(f"GPU ran out of memory while processing file: {filepath_to_process}. Try using a smaller model or increasing GPU memory.")
+                else:
+                    logger.error(f"Runtime error during transcription: {error_msg}")
+                    raise
+            except Exception as e:
+                logger.error(f"Transcription error: {str(e)}")
                 raise
-        except Exception as e:
-            logger.error(f"Transcription error: {str(e)}")
-            raise
+    finally:
+        # Clean up temporary audio file if it was created
+        if audio_path and os.path.exists(audio_path):
+            try:
+                os.remove(audio_path)
+                logger.info(f"Removed temporary audio file: {audio_path}")
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary audio file {audio_path}: {str(e)}")
 
 def process_transcription_job(job_id: str) -> bool:
     """
