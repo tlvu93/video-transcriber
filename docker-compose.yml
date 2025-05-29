@@ -58,6 +58,7 @@ services:
       - LLM_HOST=http://ollama:11434/api/generate
       - LLM_MODEL=deepseek-r1
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
       - SKIP_DB_INIT=${SKIP_DB_INIT:-false}
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=videotranscriber
@@ -65,7 +66,12 @@ services:
       - VIDEO_DIRS=${VIDEO_DIRS:-/app/data/videos}
     ports:
       - "8000:8000"
-    command: ["sh", "-c", "pip install pika==1.3.2 && python -m api.main"]
+    command:
+      [
+        "sh",
+        "-c",
+        "pip install pika==1.3.2 && pip install -e /app/common && PYTHONPATH=/app python -m api.main",
+      ]
     working_dir: /app/api_service
     restart: unless-stopped
     logging:
@@ -92,13 +98,18 @@ services:
     environment:
       - API_URL=http://api:8000
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=videotranscriber
       - RABBITMQ_PASSWORD=videotranscriber
       - MAX_WORKERS=${MAX_WORKERS:-1}
       - VIDEO_DIRS=${VIDEO_DIRS:-/app/data/videos}
     command:
-      ["python", "-m", "transcription.main", "--max-workers=${MAX_WORKERS:-1}"]
+      [
+        "sh",
+        "-c",
+        "pip install -e /app/common && PYTHONPATH=/app python -m transcription.main --max-workers=${MAX_WORKERS:-1}",
+      ]
     working_dir: /app/transcription_service
     restart: unless-stopped
     deploy:
@@ -138,11 +149,16 @@ services:
       - LLM_MODEL=deepseek-r1
       - API_URL=http://api:8000
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=videotranscriber
       - RABBITMQ_PASSWORD=videotranscriber
     command:
-      ["sh", "-c", "pip install pika==1.3.2 && python -m summarization.main"]
+      [
+        "sh",
+        "-c",
+        "pip install pika==1.3.2 && pip install -e /app/common && PYTHONPATH=/app python -m summarization.main",
+      ]
     working_dir: /app/summarization_service
     restart: unless-stopped
     logging:
@@ -192,12 +208,17 @@ services:
       - DATABASE_URL=postgresql://videotranscriber:videotranscriber@postgres/videotranscriber
       - API_URL=http://api:8000
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=videotranscriber
       - RABBITMQ_PASSWORD=videotranscriber
       - VIDEO_DIRS=${VIDEO_DIRS:-/app/data/videos}
     command:
-      ["sh", "-c", "pip install pika==1.3.2 && python -m watcher.watcher"]
+      [
+        "sh",
+        "-c",
+        "pip install pika==1.3.2 && pip install -e /app/common && PYTHONPATH=/app python -m watcher.watcher",
+      ]
     working_dir: /app/watcher_service
     restart: unless-stopped
     logging:
