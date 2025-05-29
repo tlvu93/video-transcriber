@@ -290,7 +290,44 @@ def transcribe_with_whisperx(filepath: str) -> tuple[str, List[Dict]]:
                     language=None,  # Auto-detect language
                     task="transcribe"
                 )
-                transcript_text = result["text"]
+                print(f"WhisperX transcription result: {result}")
+                
+                # Check if 'text' key exists in the result
+                if "text" not in result:
+                    # Log the keys that are present in the result for debugging
+                    logger.warning(f"WhisperX result missing 'text' key. Available keys: {list(result.keys())}")
+                    
+                    # Try to construct text from segments if available
+                    if "segments" in result and result["segments"]:
+                        # Log the structure of the first segment for debugging
+                        if result["segments"]:
+                            logger.info(f"First segment structure: {result['segments'][0]}")
+                        
+                        # Safely extract text from segments, handling cases where segments might have unexpected structure
+                        segment_texts = []
+                        for seg in result["segments"]:
+                            if isinstance(seg, dict):
+                                segment_text = seg.get("text", "")
+                                if segment_text:
+                                    segment_texts.append(segment_text.strip())
+                            else:
+                                logger.warning(f"Unexpected segment format (not a dict): {type(seg)}")
+                        
+                        if segment_texts:
+                            transcript_text = " ".join(segment_texts)
+                            logger.info(f"Text key missing in result, constructed text from segments: {len(transcript_text)} characters")
+                        else:
+                            logger.error("Failed to extract any text from segments")
+                            raise ValueError("Could not extract text from segments")
+                    else:
+                        # If no segments either, raise a more informative error
+                        logger.error(f"WhisperX result missing both 'text' and usable 'segments' keys: {result.keys()}")
+                        # Log the entire result structure for debugging (limiting size to avoid huge logs)
+                        logger.error(f"WhisperX result structure: {str(result)[:1000]}")
+                        raise ValueError("Transcription result is missing required 'text' field")
+                else:
+                    transcript_text = result["text"]
+                
                 logger.info(f"Initial transcription completed, length: {len(transcript_text)} characters")
                 
                 # Skip alignment and diarization for very short transcripts
@@ -405,18 +442,31 @@ def process_transcription_job(job_id: str) -> bool:
         if segments:
             formatted_segments = []
             for i, seg in enumerate(segments):
-                segment_data = {
-                    "id": i + 1,
-                    "start_time": seg["start"],
-                    "end_time": seg["end"],
-                    "text": seg["text"].strip()
-                }
+                # Skip segments with missing required keys
+                if not isinstance(seg, dict):
+                    logger.warning(f"Skipping non-dict segment: {seg}")
+                    continue
+                    
+                # Check for required keys
+                if "start" not in seg or "end" not in seg or "text" not in seg:
+                    logger.warning(f"Skipping segment with missing required keys: {seg}")
+                    continue
                 
-                # Add speaker information if available
-                if "speaker" in seg:
-                    segment_data["speaker"] = seg["speaker"]
-                
-                formatted_segments.append(segment_data)
+                try:
+                    segment_data = {
+                        "id": i + 1,
+                        "start_time": float(seg["start"]),
+                        "end_time": float(seg["end"]),
+                        "text": seg["text"].strip()
+                    }
+                    
+                    # Add speaker information if available
+                    if "speaker" in seg:
+                        segment_data["speaker"] = seg["speaker"]
+                    
+                    formatted_segments.append(segment_data)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Error processing segment {i}: {str(e)}, segment data: {seg}")
         
         # Create transcript via API
         transcript = create_transcript_api(video_id, transcript_text, formatted_segments)
