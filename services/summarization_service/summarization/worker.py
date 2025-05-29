@@ -1,19 +1,18 @@
 import logging
-import os
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import requests
-
-# Add the project root directory to the Python path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 from summarization.config import API_URL
 from summarization.summarizer import create_summary
 
 from common.messaging import RabbitMQClient, publish_job_status_changed_event, publish_summary_created_event
+
+# Add the project root directory to the Python path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -94,7 +93,7 @@ def update_job_status_api(
         response = requests.post(url, json=data)
         response.raise_for_status()
 
-        job = response.json()
+        response.json()
         logger.info(f"Updated summarization job {job_id} status to {status}")
 
         # Publish job status changed event
@@ -169,7 +168,7 @@ def process_summarization_job(job_id: str) -> bool:
         return False
 
 
-def get_next_summarization_job_api():
+def get_next_summarization_job_api() -> Optional[Dict[str, Any]]:
     """Get the next pending summarization job from the API."""
     try:
         response = requests.get(f"{API_URL}/summarization-jobs/next")

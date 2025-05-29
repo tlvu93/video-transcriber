@@ -6,7 +6,7 @@ echo "$(date): Starting Ollama entrypoint script"
 # Install curl if it's not available
 if ! command -v curl > /dev/null; then
     echo "$(date): curl not found, installing..."
-    
+
     # Try apt-get (Debian/Ubuntu)
     if command -v apt-get > /dev/null; then
         apt-get update && apt-get install -y curl
@@ -20,7 +20,7 @@ if ! command -v curl > /dev/null; then
         echo "$(date): ERROR - Could not install curl, package manager not found"
         exit 1
     fi
-    
+
     # Verify curl was installed
     if ! command -v curl > /dev/null; then
         echo "$(date): ERROR - Failed to install curl"

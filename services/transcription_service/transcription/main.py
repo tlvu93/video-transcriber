@@ -6,7 +6,6 @@ import traceback
 from typing import Any, Dict
 
 from transcription.api_client import (
-    api_request,
     get_all_pending_transcription_jobs_api,
     get_job_from_api,
     get_next_transcription_job_api,

@@ -9,13 +9,13 @@ from pathlib import Path
 import requests
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from watcher.config import API_URL, VIDEO_DIRS
+
+from common.messaging import RabbitMQClient, publish_video_created_event
 
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from watcher.config import API_URL, VIDEO_DIRS
-
-from common.messaging import RabbitMQClient, publish_video_created_event
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -93,7 +93,7 @@ def process_video_file(file_path):
                 logger.info(f"Published video.created event for video {video['id']}")
             except Exception as e:
                 logger.error(f"Error publishing event: {str(e)}")
-                logger.info(f"Continuing with processing as transcription job was already created via API")
+                logger.info("Continuing with processing as transcription job was already created via API")
         except requests.exceptions.RequestException as e:
             logger.error(f"Error registering video or creating job: {str(e)}")
 
@@ -211,8 +211,8 @@ def start_watching():
 
         observer.start()
 
-        logger.info(f"👀 Watching for changes in video directories...")
-        logger.info(f"📋 Press Ctrl+C to stop")
+        logger.info("👀 Watching for changes in video directories...")
+        logger.info("📋 Press Ctrl+C to stop")
 
         try:
             # Keep the script running

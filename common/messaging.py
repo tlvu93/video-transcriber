@@ -23,7 +23,7 @@ class RabbitMQClient:
     Provides methods for publishing and consuming messages.
     """
 
-    def __init__(self, host: str = None, user: str = None, password: str = None):
+    def __init__(self, host: Optional[str] = None, user: Optional[str] = None, password: Optional[str] = None):
         """
         Initialize the RabbitMQ client.
 
@@ -36,8 +36,8 @@ class RabbitMQClient:
         self.host = host or os.environ.get("RABBITMQ_HOST", "localhost")
         self.user = user or os.environ.get("RABBITMQ_USER", "guest")
         self.password = password or os.environ.get("RABBITMQ_PASSWORD", "guest")
-        self.connection = None
-        self.channel = None
+        self.connection: Optional[pika.BlockingConnection] = None
+        self.channel: Optional[pika.channel.Channel] = None
 
         # Define exchange names
         self.event_exchange = "video_transcriber_events"
@@ -105,6 +105,8 @@ class RabbitMQClient:
         """Ensure we have a valid connection."""
         if self.connection is None or not self.connection.is_open:
             self.connect()
+        assert self.connection is not None
+        assert self.channel is not None
 
     def publish_event(self, event_type: str, payload: Dict[str, Any]) -> None:
         """

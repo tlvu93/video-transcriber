@@ -5,7 +5,7 @@ import subprocess
 import threading
 import time
 import traceback
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import whisperx
@@ -199,7 +199,7 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
                     if not transcript_text:
                         raise ValueError("Could not extract text from segments")
                 else:
-                    logger.error(f"WhisperX result missing both 'text' and 'segments' keys")
+                    logger.error("WhisperX result missing both 'text' and 'segments' keys")
                     raise ValueError("Transcription result is missing required data")
             else:
                 transcript_text = result["text"]
@@ -253,7 +253,7 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
                 pass
 
 
-def format_segments(segments: List[Dict]) -> List[Dict]:
+def format_segments(segments: List[Dict]) -> Optional[List[Dict]]:
     """Format segments for database storage."""
     if not segments:
         return None

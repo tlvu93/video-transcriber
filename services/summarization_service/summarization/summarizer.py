@@ -10,11 +10,11 @@ from langchain.chains.summarize import load_summarize_chain
 from langchain_core.documents import Document
 from langchain_core.language_models.llms import LLM
 from langchain_core.prompts import PromptTemplate
+from summarization.config import LLM_HOST, LLM_MODEL
 
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from summarization.config import LLM_HOST, LLM_MODEL
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -83,7 +83,7 @@ class OllamaLLM(LLM):
             logger.error(f"Connection error details: {str(e)}")
             raise
         except requests.exceptions.Timeout as e:
-            error_msg = f"Error calling Ollama API: Request timed out after 900 seconds"
+            error_msg = "Error calling Ollama API: Request timed out after 900 seconds"
             logger.error(error_msg)
             logger.error(f"Timeout error details: {str(e)}")
             raise
@@ -115,7 +115,7 @@ def get_llm():
         return None
 
 
-def create_summary(transcript_text, video_path):
+def create_summary(transcript_text: str, video_path: str) -> str:
     """
     Create a summary of the transcript using the self-hosted LLM.
 
@@ -232,7 +232,7 @@ CONSTRAINTS
         return error_msg
 
 
-def generate_fallback_summary(transcript_text):
+def generate_fallback_summary(transcript_text: str) -> str:
     """
     Generate a basic summary when the LLM is not available.
 
@@ -251,7 +251,8 @@ def generate_fallback_summary(transcript_text):
 
     # Count words and estimate reading time
     word_count = len(transcript_text.split())
-    reading_time = round(word_count / 150)  # Assuming 150 words per minute reading speed
+    # Assuming 150 words per minute reading speed
+    reading_time = round(word_count / 150)
 
     summary = f"""Transcript Preview:
 {preview}
@@ -267,7 +268,7 @@ To generate a full AI summary, please ensure Ollama is running at {LLM_HOST} wit
     return summary
 
 
-def summarize_from_file(transcript_path, video_path):
+def summarize_from_file(transcript_path: str, video_path: str) -> str:
     """
     Read a transcript file and create a summary.
 

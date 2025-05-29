@@ -24,12 +24,12 @@ class TranscriptionQueueManager:
             max_workers: Maximum number of worker threads to use
         """
         self.max_workers = max_workers
-        self.job_queue = queue.Queue()
-        self.active_jobs = {}  # job_id -> job_data
-        self.workers = []
+        self.job_queue: queue.Queue = queue.Queue()
+        self.active_jobs: Dict[str, Dict[str, Any]] = {}  # job_id -> job_data
+        self.workers: List[threading.Thread] = []
         self.running = False
         self.lock = threading.Lock()
-        self.job_processor = None
+        self.job_processor: Optional[Callable[[str], bool]] = None
 
         logger.info(f"Initialized queue manager with {max_workers} workers")
 

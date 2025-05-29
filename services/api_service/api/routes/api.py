@@ -1,8 +1,8 @@
-import hashlib
 import logging
 import os
+import re
 import shutil
-from datetime import datetime
+import stat
 from typing import Any, Dict, List, Optional
 
 from api.config import VIDEO_DIR, VIDEO_DIRS
@@ -17,8 +17,8 @@ from api.job_queue import (
     mark_job_started,
 )
 from api.models import SummarizationJob, Summary, Transcript, TranscriptionJob, Video
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -276,7 +276,8 @@ async def register_video(video_data: VideoCreate, db: Session = Depends(get_db))
 
         if existing_video_by_hash:
             logger.info(
-                f"Video with hash {video_data.file_hash} already exists in the database as {existing_video_by_hash.filename}"
+                f"Video with hash {video_data.file_hash} already exists in the database as "
+                f"{existing_video_by_hash.filename}"
             )
             return {
                 "id": str(existing_video_by_hash.id),
@@ -873,13 +874,6 @@ def get_video(video_id: str, db: Session = Depends(get_db)):
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
     return video
-
-
-import re
-import stat
-
-from fastapi import Request, Response
-from fastapi.responses import StreamingResponse
 
 
 @app.get("/videos/{video_id}/download")

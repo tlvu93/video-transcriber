@@ -6,11 +6,20 @@ import traceback
 from pathlib import Path
 
 from sqlalchemy.orm import Session
+from summarization.summarizer import create_summary
+
+from services.api_service.api.database import get_db
+from services.api_service.api.job_queue import (
+    get_next_summarization_job,
+    mark_job_completed,
+    mark_job_failed,
+    mark_job_started,
+)
+from services.api_service.api.models import SummarizationJob, Summary, Transcript, Video
 
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from summarization.summarizer import create_summary
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")

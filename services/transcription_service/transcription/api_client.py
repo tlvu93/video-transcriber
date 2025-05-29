@@ -21,7 +21,7 @@ logger.info(f"Video directory: {VIDEO_DIR}")
 #######################
 
 
-def api_request(method: str, url: str, **kwargs) -> Dict:
+def api_request(method: str, url: str, **kwargs) -> Dict[str, Any]:
     """Make an API request with error handling."""
     try:
         if "timeout" not in kwargs:
@@ -70,7 +70,10 @@ def get_all_pending_transcription_jobs_api() -> List[Dict[str, Any]]:
         List of all pending transcription jobs, or empty list if no jobs are pending
     """
     try:
-        return api_request("get", f"{API_URL}/transcription-jobs?status=pending")
+        result = api_request("get", f"{API_URL}/transcription-jobs?status=pending")
+        if isinstance(result, list):
+            return result
+        return []
     except Exception as e:
         if "404" in str(e):
             # No pending jobs
@@ -95,7 +98,9 @@ def update_video_status_api(video_id: str, status: str) -> None:
 #######################
 
 
-def create_transcript_api(video_id, content, segments=None):
+def create_transcript_api(
+    video_id: str, content: str, segments: Optional[List[Dict[str, Any]]] = None
+) -> Optional[Dict[str, Any]]:
     """Create a transcript via the API."""
     try:
         url = f"{API_URL}/transcripts/"
@@ -129,7 +134,7 @@ def create_transcript_api(video_id, content, segments=None):
             logger.info(f"Published transcription.created event for transcript {transcript['id']}")
         except Exception as e:
             logger.error(f"Error publishing event: {str(e)}")
-            logger.info(f"Continuing with processing as summarization job was already created via API")
+            logger.info("Continuing with processing as summarization job was already created via API")
 
         return transcript
 
@@ -139,7 +144,9 @@ def create_transcript_api(video_id, content, segments=None):
         return None
 
 
-def update_job_status_api(job_id, status, processing_time=None, error_details=None):
+def update_job_status_api(
+    job_id: str, status: str, processing_time: Optional[float] = None, error_details: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, Any]]:
     """Update the status of a transcription job via the API."""
     try:
         if status == "completed":

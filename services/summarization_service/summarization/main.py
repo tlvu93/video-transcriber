@@ -6,14 +6,14 @@ import traceback
 from typing import Any, Dict
 
 import requests
-
-# Add the project root directory to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
-
 from summarization.config import API_URL
 from summarization.worker import process_summarization_job
 
 from common.messaging import EVENT_JOB_STATUS_CHANGED, EVENT_TRANSCRIPTION_CREATED, RabbitMQClient
+
+# Add the project root directory to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
