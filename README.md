@@ -161,10 +161,10 @@ video-transcriber/
 │   ├── videos/             # Video files
 ├── frontend/               # React frontend
 ├── services/               # Backend services
-│   ├── api-service/        # HTTP API
-│   ├── transcription-service/ # Video transcription
-│   ├── summarization-service/ # Transcript summarization
-│   └── watcher-service/    # File system monitoring
+│   ├── api_service/        # HTTP API
+│   ├── transcription_service/ # Video transcription
+│   ├── summarization_service/ # Transcript summarization
+│   └── watcher_service/    # File system monitoring
 └── docker-compose.yml      # Docker configuration
 ```
 

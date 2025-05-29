@@ -39,13 +39,13 @@ services:
   api:
     build:
       context: .
-      dockerfile: services/api-service/Dockerfile
+      dockerfile: services/api_service/Dockerfile
     volumes:
       - ./data:/app/data
       - ./common:/app/common
-      - ./services/api-service:/app/api-service
-      - ./services/transcription-service:/app/transcription-service
-      - ./services/summarization-service:/app/summarization-service
+      - ./services/api_service:/app/api_service
+      - ./services/transcription_service:/app/transcription_service
+      - ./services/summarization_service:/app/summarization_service
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,7 +66,7 @@ services:
     ports:
       - "8000:8000"
     command: ["sh", "-c", "pip install pika==1.3.2 && python -m api.main"]
-    working_dir: /app/api-service
+    working_dir: /app/api_service
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -77,11 +77,11 @@ services:
   transcription-worker:
     build:
       context: .
-      dockerfile: services/transcription-service/Dockerfile
+      dockerfile: services/transcription_service/Dockerfile
     volumes:
       - ./data:/app/data
       - ./common:/app/common
-      - ./services/transcription-service:/app/transcription-service
+      - ./services/transcription_service:/app/transcription_service
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,7 +99,7 @@ services:
       - VIDEO_DIRS=${VIDEO_DIRS:-/app/data/videos}
     command:
       ["python", "-m", "transcription.main", "--max-workers=${MAX_WORKERS:-1}"]
-    working_dir: /app/transcription-service
+    working_dir: /app/transcription_service
     restart: unless-stopped
     deploy:
       resources:
@@ -118,11 +118,11 @@ services:
   summarization-worker:
     build:
       context: .
-      dockerfile: services/summarization-service/Dockerfile
+      dockerfile: services/summarization_service/Dockerfile
     volumes:
       - ./data:/app/data
       - ./common:/app/common
-      - ./services/summarization-service:/app/summarization-service
+      - ./services/summarization_service:/app/summarization_service
     depends_on:
       postgres:
         condition: service_healthy
@@ -143,7 +143,7 @@ services:
       - RABBITMQ_PASSWORD=videotranscriber
     command:
       ["sh", "-c", "pip install pika==1.3.2 && python -m summarization.main"]
-    working_dir: /app/summarization-service
+    working_dir: /app/summarization_service
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -175,12 +175,12 @@ services:
   watcher:
     build:
       context: .
-      dockerfile: services/watcher-service/Dockerfile
+      dockerfile: services/watcher_service/Dockerfile
     volumes:
       - ./data:/app/data
       - ./common:/app/common
-      - ./services/api-service:/app/api-service
-      - ./services/watcher-service:/app/watcher-service
+      - ./services/api_service:/app/api_service
+      - ./services/watcher_service:/app/watcher_service
     depends_on:
       postgres:
         condition: service_healthy
@@ -198,7 +198,7 @@ services:
       - VIDEO_DIRS=${VIDEO_DIRS:-/app/data/videos}
     command:
       ["sh", "-c", "pip install pika==1.3.2 && python -m watcher.watcher"]
-    working_dir: /app/watcher-service
+    working_dir: /app/watcher_service
     restart: unless-stopped
     logging:
       driver: "json-file"
