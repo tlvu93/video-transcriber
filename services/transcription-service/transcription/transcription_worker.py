@@ -3,7 +3,7 @@ from transcription.api_client import (
     update_job_status_api,
     get_job_from_api,
     get_video_from_api,
-    update_video_status_api
+    update_video_status_api,
 )
 from transcription.config import VIDEO_DIRS
 import time
@@ -20,10 +20,9 @@ from typing import Dict, List, Tuple
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger('transcription_worker')
+logger = logging.getLogger("transcription_worker")
 
 # Global model and device
 _model = None
@@ -53,41 +52,27 @@ def get_whisperx_model():
                     torch.cuda.empty_cache()
 
                 _model = whisperx.load_model(
-                    model_name,
-                    _device,
-                    compute_type=compute_type,
-                    device_index=0
+                    model_name, _device, compute_type=compute_type, device_index=0
                 )
-                logger.info(
-                    f"WhisperX model '{model_name}' loaded successfully")
+                logger.info(f"WhisperX model '{model_name}' loaded successfully")
             except Exception as e:
                 # Fallback to smaller model if needed
-                logger.warning(
-                    f"Failed to load model '{model_name}': {str(e)}")
+                logger.warning(f"Failed to load model '{model_name}': {str(e)}")
                 try:
                     model_name = "small"
                     _model = whisperx.load_model(
-                        model_name,
-                        _device,
-                        compute_type=compute_type,
-                        device_index=0
+                        model_name, _device, compute_type=compute_type, device_index=0
                     )
-                    logger.info(
-                        f"WhisperX model '{model_name}' loaded successfully")
+                    logger.info(f"WhisperX model '{model_name}' loaded successfully")
                 except Exception as e:
                     # Final fallback to tiny model
-                    logger.warning(
-                        f"Failed to load model '{model_name}': {str(e)}")
+                    logger.warning(f"Failed to load model '{model_name}': {str(e)}")
                     model_name = "tiny"
                     compute_type = "int8"
                     _model = whisperx.load_model(
-                        model_name,
-                        _device,
-                        compute_type=compute_type,
-                        device_index=0
+                        model_name, _device, compute_type=compute_type, device_index=0
                     )
-                    logger.info(
-                        f"WhisperX model '{model_name}' loaded successfully")
+                    logger.info(f"WhisperX model '{model_name}' loaded successfully")
 
         return _model, _device
 
@@ -117,8 +102,9 @@ def find_video_file(filename: str) -> str:
 
     # Check if filename is a path
     if os.path.sep in filename:
-        direct_path = filename if os.path.isabs(
-            filename) else os.path.join(os.getcwd(), filename)
+        direct_path = (
+            filename if os.path.isabs(filename) else os.path.join(os.getcwd(), filename)
+        )
         if os.path.exists(direct_path):
             return direct_path
 
@@ -133,15 +119,23 @@ def extract_audio(video_path: str) -> str:
 
     try:
         cmd = [
-            "ffmpeg", "-i", video_path, "-vn", "-acodec", "pcm_s16le",
-            "-ar", "16000", "-ac", "1", "-y", audio_path
+            "ffmpeg",
+            "-i",
+            video_path,
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-y",
+            audio_path,
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE)
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return audio_path
     except subprocess.CalledProcessError as e:
-        logger.error(
-            f"ffmpeg error: {e.stderr.decode('utf-8', errors='replace')}")
+        logger.error(f"ffmpeg error: {e.stderr.decode('utf-8', errors='replace')}")
         raise ValueError(f"Failed to extract audio from video: {video_path}")
 
 
@@ -163,7 +157,8 @@ def extract_text_from_segments(segments: List[Dict]) -> str:
     # Join texts
     text = " ".join(texts)
     logger.info(
-        f"Text key missing in result, constructed text from segments: {len(text)} characters")
+        f"Text key missing in result, constructed text from segments: {len(text)} characters"
+    )
     return text
 
 
@@ -175,8 +170,16 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
     try:
         # Extract audio if needed
         file_ext = os.path.splitext(filepath)[1].lower()
-        video_extensions = ['.mp4', '.avi', '.mov',
-                            '.mkv', '.webm', '.flv', '.wmv', '.m4v']
+        video_extensions = [
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".mkv",
+            ".webm",
+            ".flv",
+            ".wmv",
+            ".m4v",
+        ]
 
         if file_ext in video_extensions:
             audio_path = extract_audio(filepath)
@@ -190,14 +193,15 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
             audio = whisperx.load_audio(filepath_to_process)
             if len(audio) == 0:
                 raise ValueError(
-                    f"Audio file is empty or invalid: {filepath_to_process}")
+                    f"Audio file is empty or invalid: {filepath_to_process}"
+                )
 
             # Transcribe
             result = model.transcribe(
                 audio,
                 batch_size=16,
                 language=None,  # Auto-detect language
-                task="transcribe"
+                task="transcribe",
             )
 
             # Extract text from result
@@ -205,34 +209,33 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
             if "text" not in result:
                 # Handle missing text key by constructing from segments
                 if "segments" in result and result["segments"]:
-                    transcript_text = extract_text_from_segments(
-                        result["segments"])
+                    transcript_text = extract_text_from_segments(result["segments"])
                     if not transcript_text:
-                        raise ValueError(
-                            "Could not extract text from segments")
+                        raise ValueError("Could not extract text from segments")
                 else:
                     logger.error(
-                        f"WhisperX result missing both 'text' and 'segments' keys")
-                    raise ValueError(
-                        "Transcription result is missing required data")
+                        f"WhisperX result missing both 'text' and 'segments' keys"
+                    )
+                    raise ValueError("Transcription result is missing required data")
             else:
                 transcript_text = result["text"]
 
             logger.info(
-                f"Initial transcription completed, length: {len(transcript_text)} characters")
+                f"Initial transcription completed, length: {len(transcript_text)} characters"
+            )
 
             # Skip further processing for short transcripts
             if len(transcript_text.strip()) < 10:
                 logger.warning(
-                    "Transcript is very short, skipping alignment and diarization")
+                    "Transcript is very short, skipping alignment and diarization"
+                )
                 return transcript_text, result.get("segments", [])
 
             # Try to align timestamps
             try:
                 logger.info("Aligning timestamps...")
                 model_a, metadata_align = whisperx.load_align_model(
-                    language_code=result["language"],
-                    device=device
+                    language_code=result["language"], device=device
                 )
                 result = whisperx.align(
                     result["segments"],
@@ -240,7 +243,7 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
                     metadata_align,
                     audio,
                     device,
-                    return_char_alignments=False
+                    return_char_alignments=False,
                 )
             except Exception as e:
                 logger.warning(f"Timestamp alignment failed: {str(e)}")
@@ -249,10 +252,10 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
             try:
                 logger.info("Performing speaker diarization...")
                 diarize_model = whisperx.DiarizationPipeline(
-                    use_auth_token=None, device=device)
+                    use_auth_token=None, device=device
+                )
                 diarize_segments = diarize_model(audio)
-                result = whisperx.assign_word_speakers(
-                    diarize_segments, result)
+                result = whisperx.assign_word_speakers(diarize_segments, result)
             except Exception as e:
                 logger.warning(f"Speaker diarization failed: {str(e)}")
 
@@ -294,7 +297,7 @@ def format_segments(segments: List[Dict]) -> List[Dict]:
                 "id": i + 1,
                 "start_time": float(seg["start"]),
                 "end_time": float(seg["end"]),
-                "text": seg["text"].strip()
+                "text": seg["text"].strip(),
             }
 
             # Add speaker information if available
@@ -335,7 +338,8 @@ def process_transcription_job(job_id: str) -> bool:
         # Format segments and create transcript
         formatted_segments = format_segments(segments)
         transcript = create_transcript_api(
-            video_id, transcript_text, formatted_segments)
+            video_id, transcript_text, formatted_segments
+        )
         if not transcript:
             raise Exception("Failed to create transcript via API")
 
@@ -345,21 +349,18 @@ def process_transcription_job(job_id: str) -> bool:
         update_job_status_api(job_id, "completed", processing_time)
 
         logger.info(
-            f"Transcription completed for video {filename} in {processing_time:.2f} seconds")
+            f"Transcription completed for video {filename} in {processing_time:.2f} seconds"
+        )
         return True
 
     except Exception as e:
         logger.error(f"Error processing transcription job {job_id}: {str(e)}")
 
         # Mark job as failed
-        error_details = {
-            "error": str(e),
-            "traceback": traceback.format_exc()[:1000]
-        }
+        error_details = {"error": str(e), "traceback": traceback.format_exc()[:1000]}
 
         try:
-            update_job_status_api(
-                job_id, "failed", error_details=error_details)
+            update_job_status_api(job_id, "failed", error_details=error_details)
         except Exception:
             pass
 

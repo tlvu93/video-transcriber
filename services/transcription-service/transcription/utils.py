@@ -8,10 +8,9 @@ from transcription.config import VIDEO_DIRS
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger('utils')
+logger = logging.getLogger("utils")
 
 
 def get_video_metadata(filepath: str) -> Dict[str, Any]:
@@ -30,15 +29,16 @@ def get_video_metadata(filepath: str) -> Dict[str, Any]:
         # Run ffprobe to get video metadata
         cmd = [
             "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
             "-show_format",
             "-show_streams",
-            filepath
+            filepath,
         ]
 
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         metadata = json.loads(result.stdout)
 
         # Extract relevant metadata
@@ -51,27 +51,33 @@ def get_video_metadata(filepath: str) -> Dict[str, Any]:
         }
 
         # Extract video stream info
-        video_streams = [s for s in metadata.get(
-            "streams", []) if s.get("codec_type") == "video"]
+        video_streams = [
+            s for s in metadata.get("streams", []) if s.get("codec_type") == "video"
+        ]
         if video_streams:
             video_stream = video_streams[0]
-            video_info.update({
-                "width": video_stream.get("width", 0),
-                "height": video_stream.get("height", 0),
-                "codec": video_stream.get("codec_name", "unknown"),
-                "fps": eval(video_stream.get("r_frame_rate", "0/1")),
-            })
+            video_info.update(
+                {
+                    "width": video_stream.get("width", 0),
+                    "height": video_stream.get("height", 0),
+                    "codec": video_stream.get("codec_name", "unknown"),
+                    "fps": eval(video_stream.get("r_frame_rate", "0/1")),
+                }
+            )
 
         # Extract audio stream info
-        audio_streams = [s for s in metadata.get(
-            "streams", []) if s.get("codec_type") == "audio"]
+        audio_streams = [
+            s for s in metadata.get("streams", []) if s.get("codec_type") == "audio"
+        ]
         if audio_streams:
             audio_stream = audio_streams[0]
-            video_info.update({
-                "audio_codec": audio_stream.get("codec_name", "unknown"),
-                "audio_channels": audio_stream.get("channels", 0),
-                "audio_sample_rate": audio_stream.get("sample_rate", 0),
-            })
+            video_info.update(
+                {
+                    "audio_codec": audio_stream.get("codec_name", "unknown"),
+                    "audio_channels": audio_stream.get("channels", 0),
+                    "audio_sample_rate": audio_stream.get("sample_rate", 0),
+                }
+            )
 
         logger.info(f"Video metadata retrieved successfully: {video_info}")
         return video_info
@@ -138,7 +144,8 @@ def find_video_file(filepath):
     # If file doesn't exist at the expected path, try to find it in all video directories and their subdirectories
     filename = os.path.basename(filepath)
     logger.info(
-        f"File not found at {filepath}, searching in all video directories for {filename}...")
+        f"File not found at {filepath}, searching in all video directories for {filename}..."
+    )
 
     # Search in all configured video directories
     for video_dir in VIDEO_DIRS:

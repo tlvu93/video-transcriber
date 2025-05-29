@@ -1,7 +1,7 @@
 from common.messaging import (
     RabbitMQClient,
     EVENT_VIDEO_CREATED,
-    EVENT_JOB_STATUS_CHANGED
+    EVENT_JOB_STATUS_CHANGED,
 )
 from transcription.queue_manager import TranscriptionQueueManager
 from transcription.transcription_worker import process_transcription_job
@@ -9,7 +9,7 @@ from transcription.api_client import (
     api_request,
     get_next_transcription_job_api,
     get_all_pending_transcription_jobs_api,
-    get_job_from_api
+    get_job_from_api,
 )
 import argparse
 import logging
@@ -20,16 +20,14 @@ from typing import Dict, Any
 
 
 # Add the project root directory to the Python path
-sys.path.insert(0, os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger('transcription')
+logger = logging.getLogger("transcription")
 
 # Initialize RabbitMQ client
 rabbitmq_client = RabbitMQClient()
@@ -53,8 +51,7 @@ def handle_video_created_event(event_data: Dict[str, Any]):
             logger.error("Received video.created event without video_id")
             return
 
-        logger.info(
-            f"Received video.created event for video {video_id} ({filename})")
+        logger.info(f"Received video.created event for video {video_id} ({filename})")
 
         # Get the next transcription job from the API
         # The API service should have already created a transcription job for this video
@@ -62,7 +59,8 @@ def handle_video_created_event(event_data: Dict[str, Any]):
 
         if job and job["video_id"] == video_id:
             logger.info(
-                f"Adding transcription job {job['id']} for video {video_id} to queue")
+                f"Adding transcription job {job['id']} for video {video_id} to queue"
+            )
             queue_manager.add_job(job)
         else:
             logger.warning(f"No transcription job found for video {video_id}")
@@ -93,7 +91,8 @@ def handle_job_status_changed_event(event_data: Dict[str, Any]):
             return
 
         logger.info(
-            f"Received job.status.changed event for {job_type} job {job_id}: {status}")
+            f"Received job.status.changed event for {job_type} job {job_id}: {status}"
+        )
 
         # If the job is pending, add it to the queue
         if status == "pending":
@@ -133,14 +132,14 @@ def run_worker(max_workers: int = 1):
         rabbitmq_client.subscribe_to_event(
             EVENT_VIDEO_CREATED,
             handle_video_created_event,
-            "transcription_video_created_queue"
+            "transcription_video_created_queue",
         )
 
         # Subscribe to job.status.changed events
         rabbitmq_client.subscribe_to_event(
             EVENT_JOB_STATUS_CHANGED,
             handle_job_status_changed_event,
-            "transcription_job_status_queue"
+            "transcription_job_status_queue",
         )
 
         # TODO: Check if transcription jobs should pull from the API or if they should be pushed by the API service
@@ -151,7 +150,8 @@ def run_worker(max_workers: int = 1):
             logger.info(f"Found {len(jobs)} pending transcription jobs")
             for job in jobs:
                 logger.info(
-                    f"Adding transcription job {job['id']} for video {job['video_id']} to queue")
+                    f"Adding transcription job {job['id']} for video {job['video_id']} to queue"
+                )
                 queue_manager.add_job(job)
         else:
             logger.info("No pending transcription jobs found")
@@ -177,8 +177,12 @@ def run_worker(max_workers: int = 1):
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Transcription worker")
-    parser.add_argument("--max-workers", type=int, default=1,
-                        help="Maximum number of worker threads to use")
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=1,
+        help="Maximum number of worker threads to use",
+    )
     args = parser.parse_args()
 
     # Run the worker
