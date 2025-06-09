@@ -44,6 +44,8 @@ class Transcript(Base):
     video = relationship("Video", back_populates="transcripts")
     summaries = relationship("Summary", back_populates="transcript")
     summarization_jobs = relationship("SummarizationJob", back_populates="transcript")
+    translations = relationship("TranslatedTranscript", back_populates="transcript")
+    translation_jobs = relationship("TranslationJob", back_populates="transcript")
 
 
 class Summary(Base):
@@ -92,3 +94,38 @@ class SummarizationJob(Base):
     error_details = Column(JSON, nullable=True)
 
     transcript = relationship("Transcript", back_populates="summarization_jobs")
+
+
+class TranslatedTranscript(Base):
+    """Translated transcript model."""
+
+    __tablename__ = "translated_transcripts"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    transcript_id = Column(String, ForeignKey("transcripts.id"), nullable=False)
+    language = Column(String, nullable=False)  # Target language code (e.g., "de", "en")
+    content = Column(Text, nullable=False)
+    segments = Column(JSON, nullable=True)  # Store translated segments as JSON
+    status = Column(String, default="completed")  # completed, error
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    transcript = relationship("Transcript", back_populates="translations")
+
+
+class TranslationJob(Base):
+    """Translation job model."""
+
+    __tablename__ = "translation_jobs"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    transcript_id = Column(String, ForeignKey("transcripts.id"), nullable=False)
+    source_language = Column(String, nullable=True)  # If null, auto-detect
+    target_language = Column(String, nullable=False)
+    status = Column(String, default="pending")  # pending, processing, completed, failed
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    processing_time_seconds = Column(Float, nullable=True)
+    error_details = Column(JSON, nullable=True)
+
+    transcript = relationship("Transcript", back_populates="translation_jobs")

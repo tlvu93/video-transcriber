@@ -46,6 +46,7 @@ services:
       - ./services/api_service:/app/api_service
       - ./services/transcription_service:/app/transcription_service
       - ./services/summarization_service:/app/summarization_service
+      - ./services/translation_service:/app/translation_service
     depends_on:
       postgres:
         condition: service_healthy
@@ -161,6 +162,47 @@ services:
         "pip install pika==1.3.2 && pip install -e /app/common && PYTHONPATH=/app python -m summarization.main",
       ]
     working_dir: /app/summarization_service
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  translation-worker:
+    build:
+      context: .
+      dockerfile: services/translation_service/Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./common:/app/common
+      - ./services/translation_service:/app/translation_service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      api:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - LLM_HOST=${LLM_HOST}
+      - LLM_MODEL=${LLM_MODEL}
+      - API_URL=${API_URL}
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
+    command:
+      [
+        "sh",
+        "-c",
+        "pip install pika==1.3.2 && pip install -e /app/common && PYTHONPATH=/app python -m translation.main",
+      ]
+    working_dir: /app/translation_service
     restart: unless-stopped
     logging:
       driver: "json-file"

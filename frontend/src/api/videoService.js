@@ -88,3 +88,64 @@ export const retryTranscriptionJob = async (jobId) => {
     throw error;
   }
 };
+
+export const fetchTranslatedTranscripts = async (
+  transcriptId,
+  language = null
+) => {
+  try {
+    let url = `${API_URL}/translated-transcripts/?transcript_id=${transcriptId}`;
+    if (language) {
+      url += `&language=${language}`;
+    }
+    const response = await axios.get(url);
+    return response.data;
+  } catch (error) {
+    console.error(
+      `Error fetching translated transcripts for transcript ID ${transcriptId}:`,
+      error
+    );
+    throw error;
+  }
+};
+
+export const createTranslationJob = async (
+  transcriptId,
+  targetLanguage,
+  sourceLanguage = null
+) => {
+  try {
+    const payload = {
+      transcript_id: transcriptId,
+      target_language: targetLanguage,
+    };
+
+    if (sourceLanguage) {
+      payload.source_language = sourceLanguage;
+    }
+
+    const response = await axios.post(`${API_URL}/translation-jobs/`, payload);
+    return response.data;
+  } catch (error) {
+    console.error(
+      `Error creating translation job for transcript ID ${transcriptId}:`,
+      error
+    );
+    throw error;
+  }
+};
+
+export const fetchTranslationJobs = async (transcriptId) => {
+  try {
+    // This is a placeholder - the API doesn't currently have an endpoint to fetch jobs by transcript ID
+    // You would need to add this endpoint to the API if needed
+    console.warn("fetchTranslationJobs is not fully implemented");
+    return [];
+  } catch (error) {
+    console.error(
+      `Error fetching translation jobs for transcript ID ${transcriptId}:`,
+      error
+    );
+    throw error;
+  }
+};

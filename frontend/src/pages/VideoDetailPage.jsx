@@ -4,6 +4,7 @@ import VideoPlayer from "../components/VideoPlayer";
 import VideoMetadata from "../components/VideoMetadata";
 import TranscriptList from "../components/TranscriptList";
 import VideoSummary from "../components/VideoSummary";
+import TranslationPanel from "../components/TranslationPanel";
 import TranscriptionJobStatus from "../components/TranscriptionJobStatus";
 import { fetchVideoById, fetchTranscriptsByVideoId } from "../api/videoService";
 
@@ -211,6 +212,7 @@ const VideoDetailPage = () => {
               }}
             />
             {transcript && <VideoSummary transcript={transcript} />}
+            {transcript && <TranslationPanel transcript={transcript} />}
           </div>
         </div>
         <div>

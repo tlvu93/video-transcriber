@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from api.models import SummarizationJob, TranscriptionJob
+from api.models import SummarizationJob, TranscriptionJob, TranslationJob
 from sqlalchemy.orm import Session
 
 # Configure logging
@@ -87,7 +87,7 @@ def mark_job_completed(job, processing_time: float, db: Session) -> None:
     job.completed_at = datetime.utcnow()
     job.processing_time_seconds = processing_time
     db.commit()
-    logger.info(f"Job {job.id} marked as completed in {processing_time:.2f} seconds")
+    logger.info(f"Job {job.id} marked as completed in {processing_time: .2f} seconds")
 
 
 def mark_job_failed(job, error_details: Dict[str, Any], db: Session) -> None:
@@ -141,4 +141,49 @@ def create_summarization_job(transcript_id, db: Session) -> SummarizationJob:
     db.commit()
     db.refresh(job)
     logger.info(f"Created summarization job {job.id} for transcript {transcript_id}")
+    return job
+
+
+def get_next_translation_job(db: Session) -> Optional[TranslationJob]:
+    """
+    Get the next pending translation job from the queue.
+
+    Args:
+        db: Database session
+
+    Returns:
+        The next pending translation job, or None if no jobs are pending
+    """
+    job = (
+        db.query(TranslationJob).filter(TranslationJob.status == "pending").order_by(TranslationJob.created_at).first()
+    )
+
+    if job:
+        logger.info(f"Found pending translation job: {job.id}")
+    else:
+        logger.debug("No pending translation jobs found")
+
+    return job
+
+
+def create_translation_job(transcript_id, target_language, source_language=None, db: Session = None) -> TranslationJob:
+    """
+    Create a new translation job.
+
+    Args:
+        transcript_id: ID of the transcript to translate
+        target_language: Target language code (e.g., "de", "en")
+        source_language: Source language code (optional, will be auto-detected if None)
+        db: Database session
+
+    Returns:
+        The created translation job
+    """
+    job = TranslationJob(
+        transcript_id=transcript_id, target_language=target_language, source_language=source_language, status="pending"
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    logger.info(f"Created translation job {job.id} for transcript {transcript_id} to {target_language}")
     return job

@@ -10,13 +10,23 @@ from api.database import get_db
 from api.job_queue import (
     create_summarization_job,
     create_transcription_job,
+    create_translation_job,
     get_next_summarization_job,
     get_next_transcription_job,
+    get_next_translation_job,
     mark_job_completed,
     mark_job_failed,
     mark_job_started,
 )
-from api.models import SummarizationJob, Summary, Transcript, TranscriptionJob, Video
+from api.models import (
+    SummarizationJob,
+    Summary,
+    Transcript,
+    TranscriptionJob,
+    TranslatedTranscript,
+    TranslationJob,
+    Video,
+)
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -27,6 +37,7 @@ from common.messaging import (
     publish_job_status_changed_event,
     publish_summary_created_event,
     publish_transcription_created_event,
+    publish_translation_created_event,
     publish_video_created_event,
 )
 
@@ -117,6 +128,49 @@ class SummaryResponse(BaseModel):
     id: str
     transcript_id: str
     content: str
+    status: str
+    created_at: Any
+
+
+class TranslationJobCreate(BaseModel):
+    transcript_id: str
+    target_language: str
+    source_language: Optional[str] = None
+
+
+class TranslationJobResponse(BaseModel):
+    id: str
+    transcript_id: str
+    source_language: Optional[str]
+    target_language: str
+    status: str
+    created_at: Any
+    started_at: Optional[Any] = None
+    completed_at: Optional[Any] = None
+    processing_time_seconds: Optional[float] = None
+    error_details: Optional[Dict[str, Any]] = None
+
+
+class TranslationJobUpdate(BaseModel):
+    status: Optional[str] = None
+    processing_time_seconds: Optional[float] = None
+    error_details: Optional[Dict[str, Any]] = None
+
+
+class TranslatedTranscriptCreate(BaseModel):
+    transcript_id: str
+    language: str
+    content: str
+    segments: Optional[List[Dict[str, Any]]] = None
+    status: str = "completed"
+
+
+class TranslatedTranscriptResponse(BaseModel):
+    id: str
+    transcript_id: str
+    language: str
+    content: str
+    segments: Optional[List[Dict[str, Any]]] = None
     status: str
     created_at: Any
 
@@ -1086,3 +1140,242 @@ def get_summary(summary_id: str, db: Session = Depends(get_db)):
     if not summary:
         raise HTTPException(status_code=404, detail="Summary not found")
     return summary
+
+
+@app.post("/translation-jobs/", response_model=TranslationJobResponse)
+async def create_translation_job_endpoint(job_data: TranslationJobCreate, db: Session = Depends(get_db)):
+    """
+    Create a new translation job.
+
+    Args:
+        job_data: The job data
+        db: Database session
+
+    Returns:
+        The created translation job
+    """
+    logger.info(f"Creating translation job for transcript: {job_data.transcript_id} to {job_data.target_language}")
+
+    # Check if the transcript exists
+    transcript = db.query(Transcript).filter(Transcript.id == job_data.transcript_id).first()
+    if not transcript:
+        raise HTTPException(status_code=404, detail=f"Transcript not found: {job_data.transcript_id}")
+
+    # Create a translation job
+    job = create_translation_job(job_data.transcript_id, job_data.target_language, job_data.source_language, db)
+
+    # Publish job status changed event
+    try:
+        rabbitmq_client.connect()
+        publish_job_status_changed_event(rabbitmq_client, "translation", str(job.id), "pending")
+        logger.info(f"Published job.status.changed event for translation job {job.id}")
+    except Exception as e:
+        logger.error(f"Error publishing event: {str(e)}")
+
+    return job
+
+
+@app.get("/translation-jobs/next", response_model=Optional[TranslationJobResponse])
+async def get_next_translation_job_endpoint(db: Session = Depends(get_db)):
+    """
+    Get the next pending translation job.
+    Used by the translation worker.
+
+    Args:
+        db: Database session
+
+    Returns:
+        The next pending translation job, or 404 if no jobs are pending
+    """
+    job = get_next_translation_job(db)
+    if not job:
+        raise HTTPException(status_code=404, detail="No pending translation jobs")
+    return job
+
+
+@app.get("/translation-jobs/{job_id}", response_model=TranslationJobResponse)
+async def get_translation_job(job_id: str, db: Session = Depends(get_db)):
+    """
+    Get a translation job by ID.
+
+    Args:
+        job_id: The ID of the job
+        db: Database session
+
+    Returns:
+        The translation job
+    """
+    job = db.query(TranslationJob).filter(TranslationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Translation job not found: {job_id}")
+    return job
+
+
+@app.post("/translation-jobs/{job_id}/start", response_model=TranslationJobResponse)
+async def start_translation_job(job_id: str, db: Session = Depends(get_db)):
+    """
+    Mark a translation job as started.
+    Used by the translation worker.
+
+    Args:
+        job_id: The ID of the job
+        db: Database session
+
+    Returns:
+        The updated translation job
+    """
+    job = db.query(TranslationJob).filter(TranslationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Translation job not found: {job_id}")
+
+    mark_job_started(job, db)
+
+    # Publish job status changed event
+    try:
+        rabbitmq_client.connect()
+        publish_job_status_changed_event(rabbitmq_client, "translation", str(job.id), "processing")
+    except Exception as e:
+        logger.error(f"Error publishing event: {str(e)}")
+
+    return job
+
+
+@app.post("/translation-jobs/{job_id}/complete", response_model=TranslationJobResponse)
+async def complete_translation_job(job_id: str, update_data: TranslationJobUpdate, db: Session = Depends(get_db)):
+    """
+    Mark a translation job as completed.
+    Used by the translation worker.
+
+    Args:
+        job_id: The ID of the job
+        update_data: The update data
+        db: Database session
+
+    Returns:
+        The updated translation job
+    """
+    job = db.query(TranslationJob).filter(TranslationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Translation job not found: {job_id}")
+
+    mark_job_completed(job, update_data.processing_time_seconds, db)
+    return job
+
+
+@app.post("/translation-jobs/{job_id}/fail", response_model=TranslationJobResponse)
+async def fail_translation_job(job_id: str, update_data: TranslationJobUpdate, db: Session = Depends(get_db)):
+    """
+    Mark a translation job as failed.
+    Used by the translation worker.
+
+    Args:
+        job_id: The ID of the job
+        update_data: The update data
+        db: Database session
+
+    Returns:
+        The updated translation job
+    """
+    job = db.query(TranslationJob).filter(TranslationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Translation job not found: {job_id}")
+
+    mark_job_failed(job, update_data.error_details, db)
+    return job
+
+
+@app.post("/translated-transcripts/", response_model=TranslatedTranscriptResponse)
+async def create_translated_transcript(transcript_data: TranslatedTranscriptCreate, db: Session = Depends(get_db)):
+    """
+    Create a new translated transcript.
+    Used by the translation worker.
+
+    Args:
+        transcript_data: The translated transcript data
+        db: Database session
+
+    Returns:
+        The created translated transcript
+    """
+    logger.info(
+        f"Creating translated transcript for transcript: {transcript_data.transcript_id} in {transcript_data.language}"
+    )
+
+    # Check if the transcript exists
+    transcript = db.query(Transcript).filter(Transcript.id == transcript_data.transcript_id).first()
+    if not transcript:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Transcript not found: {transcript_data.transcript_id}",
+        )
+
+    # Create a translated transcript
+    translated_transcript = TranslatedTranscript(
+        transcript_id=transcript_data.transcript_id,
+        language=transcript_data.language,
+        content=transcript_data.content,
+        segments=transcript_data.segments,
+        status=transcript_data.status,
+    )
+    db.add(translated_transcript)
+    db.commit()
+    db.refresh(translated_transcript)
+
+    # Publish translated transcript created event
+    try:
+        rabbitmq_client.connect()
+        publish_translation_created_event(
+            rabbitmq_client, str(translated_transcript.id), str(translated_transcript.transcript_id)
+        )
+        logger.info(f"Published translation.created event for translation {translated_transcript.id}")
+    except Exception as e:
+        logger.error(f"Error publishing event: {str(e)}")
+
+    return translated_transcript
+
+
+@app.get("/translated-transcripts/")
+def list_translated_transcripts(
+    transcript_id: Optional[str] = None, language: Optional[str] = None, db: Session = Depends(get_db)
+):
+    """
+    List all translated transcripts, optionally filtered by transcript ID and/or language.
+
+    Args:
+        transcript_id: Optional transcript ID to filter by
+        language: Optional language code to filter by
+        db: Database session
+
+    Returns:
+        List of translated transcripts
+    """
+    query = db.query(TranslatedTranscript)
+
+    if transcript_id:
+        query = query.filter(TranslatedTranscript.transcript_id == transcript_id)
+
+    if language:
+        query = query.filter(TranslatedTranscript.language == language)
+
+    translated_transcripts = query.all()
+    return translated_transcripts
+
+
+@app.get("/translated-transcripts/{translated_transcript_id}")
+def get_translated_transcript(translated_transcript_id: str, db: Session = Depends(get_db)):
+    """
+    Get a translated transcript by ID.
+
+    Args:
+        translated_transcript_id: The ID of the translated transcript
+        db: Database session
+
+    Returns:
+        The translated transcript object
+    """
+    translated_transcript = (
+        db.query(TranslatedTranscript).filter(TranslatedTranscript.id == translated_transcript_id).first()
+    )
+    if not translated_transcript:
+        raise HTTPException(status_code=404, detail="Translated transcript not found")
+    return translated_transcript

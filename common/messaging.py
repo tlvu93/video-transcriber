@@ -14,6 +14,7 @@ logger = logging.getLogger("messaging")
 EVENT_VIDEO_CREATED = "video.created"
 EVENT_TRANSCRIPTION_CREATED = "transcription.created"
 EVENT_SUMMARY_CREATED = "summary.created"
+EVENT_TRANSLATION_CREATED = "translation.created"
 EVENT_JOB_STATUS_CHANGED = "job.status.changed"
 
 
@@ -295,4 +296,19 @@ def publish_job_status_changed_event(client: RabbitMQClient, job_type: str, job_
     client.publish_event(
         EVENT_JOB_STATUS_CHANGED,
         {"job_type": job_type, "job_id": job_id, "status": status},
+    )
+
+
+def publish_translation_created_event(client: RabbitMQClient, translation_id: str, transcript_id: str) -> None:
+    """
+    Publish a translation.created event.
+
+    Args:
+        client: RabbitMQ client
+        translation_id: ID of the created translation
+        transcript_id: ID of the transcript
+    """
+    client.publish_event(
+        EVENT_TRANSLATION_CREATED,
+        {"translation_id": translation_id, "transcript_id": transcript_id},
     )
