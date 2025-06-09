@@ -124,7 +124,9 @@ export const createTranslationJob = async (
       payload.source_language = sourceLanguage;
     }
 
+    console.log("Creating translation job with payload:", payload);
     const response = await axios.post(`${API_URL}/translation-jobs/`, payload);
+    console.log("Translation job created:", response.data);
     return response.data;
   } catch (error) {
     console.error(
