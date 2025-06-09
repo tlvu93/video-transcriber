@@ -3,6 +3,8 @@ import TranscriptSegment from "./TranscriptSegment";
 
 const TranscriptList = ({ transcript, currentTime, onSegmentClick }) => {
   const [showTimestamps, setShowTimestamps] = useState(true);
+  const [showSpeaker, setShowSpeaker] = useState(true); // New state for speaker visibility
+  const [menuOpen, setMenuOpen] = useState(false); // New state for menu visibility
   const [searchQuery, setSearchQuery] = useState("");
 
   if (!transcript) {
@@ -69,11 +71,22 @@ const TranscriptList = ({ transcript, currentTime, onSegmentClick }) => {
 
   // Handle downloading transcript as text
   const handleDownloadTranscript = () => {
-    // Create text content
     const textContent = segments
       .map((segment) => {
-        const time = formatTimeForDownload(segment.start_time);
-        return showTimestamps ? `[${time}] ${segment.text}` : segment.text;
+        const timeStr = showTimestamps ? `[${formatTimeForDownload(segment.start_time)}] ` : "";
+        const speakerStr = showSpeaker && segment.speaker ? `${segment.speaker}: ` : "";
+
+        let line = "";
+        if (showTimestamps && showSpeaker && segment.speaker) {
+          line = `[${formatTimeForDownload(segment.start_time)}] ${segment.speaker}: ${segment.text}`;
+        } else if (showTimestamps) {
+          line = `[${formatTimeForDownload(segment.start_time)}] ${segment.text}`;
+        } else if (showSpeaker && segment.speaker) {
+          line = `${segment.speaker}: ${segment.text}`;
+        } else {
+          line = segment.text;
+        }
+        return line;
       })
       .join("\n\n");
 
@@ -108,19 +121,53 @@ const TranscriptList = ({ transcript, currentTime, onSegmentClick }) => {
         <h3 className="text-lg font-semibold text-gray-800 dark:text-white">
           Transcript
         </h3>
-        <div className="flex space-x-2">
+        <div className="relative inline-block text-left">
           <button
-            onClick={() => setShowTimestamps(!showTimestamps)}
+            onClick={() => setMenuOpen(!menuOpen)}
             className="px-3 py-1 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
           >
-            {showTimestamps ? "Hide Timestamps" : "Show Timestamps"}
+            Menu
           </button>
-          <button
-            onClick={handleDownloadTranscript}
-            className="px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
-          >
-            Download
-          </button>
+          {menuOpen && (
+            <div className="origin-top-right absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 focus:outline-none z-10">
+              <div className="py-1" role="menu" aria-orientation="vertical" aria-labelledby="options-menu">
+                <div className="px-4 py-2 text-sm text-gray-700 dark:text-gray-200 font-semibold">
+                  Category Options
+                </div>
+                <button
+                  onClick={() => {
+                    setShowTimestamps(!showTimestamps);
+                    // setMenuOpen(false); // Optionally close menu on selection
+                  }}
+                  className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600"
+                  role="menuitem"
+                >
+                  {showTimestamps ? "Hide Timestamps" : "Show Timestamps"}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowSpeaker(!showSpeaker);
+                    // setMenuOpen(false); // Optionally close menu on selection
+                  }}
+                  className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600"
+                  role="menuitem"
+                >
+                  {showSpeaker ? "Hide Speaker" : "Show Speaker"}
+                </button>
+                <hr className="my-1 border-gray-200 dark:border-gray-600" />
+                <button
+                  onClick={() => {
+                    handleDownloadTranscript();
+                    setMenuOpen(false); // Close menu after action
+                  }}
+                  className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600"
+                  role="menuitem"
+                >
+                  Download Transcript
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -143,6 +190,7 @@ const TranscriptList = ({ transcript, currentTime, onSegmentClick }) => {
               activeSegment && activeSegment.start_time === segment.start_time
             }
             showTimestamps={showTimestamps}
+            showSpeaker={showSpeaker} // Pass showSpeaker prop
             onClick={onSegmentClick}
           />
         ))}

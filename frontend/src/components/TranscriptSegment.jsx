@@ -1,4 +1,32 @@
-const TranscriptSegment = ({ segment, isActive, showTimestamps, onClick }) => {
+const funnySpeakerNames = [
+  "Captain Chatterbox",
+  "Professor Ponder",
+  "Duchess of Dialogue",
+  "Sir Reginald Monologue",
+  "The Oracle of Oratory",
+  "Whispering Willow",
+  "Baron Von Blabbermouth",
+  "Countess Converse",
+  "Agent Articulation",
+  "Chancellor of Chit-Chat",
+];
+
+const getFunnyName = (speakerId) => {
+  if (!speakerId || !speakerId.includes("_")) {
+    return speakerId; // Return original if not in expected format
+  }
+  const parts = speakerId.split("_");
+  const numStr = parts[parts.length - 1];
+  const num = parseInt(numStr, 10);
+
+  if (isNaN(num)) {
+    return speakerId; // Return original if number parsing fails
+  }
+
+  return funnySpeakerNames[num % funnySpeakerNames.length];
+};
+
+const TranscriptSegment = ({ segment, isActive, showTimestamps, showSpeaker, onClick }) => {
   // Format time from seconds to [MM:SS] format
   const formatTime = (seconds) => {
     if (seconds === undefined || seconds === null) return "00:00";
@@ -55,13 +83,13 @@ const TranscriptSegment = ({ segment, isActive, showTimestamps, onClick }) => {
             [{formatTime(safeSegment.start_time)}]
           </span>
         )}
-        {safeSegment.speaker && (
+        {showSpeaker && safeSegment.speaker && (
           <span
             className={`text-xs px-2 py-1 rounded-full font-medium flex-shrink-0 ${getSpeakerColor(
               safeSegment.speaker
             )}`}
           >
-            {safeSegment.speaker}
+            {getFunnyName(safeSegment.speaker)}
           </span>
         )}
         <span className="text-gray-800 dark:text-gray-200 flex-1">
