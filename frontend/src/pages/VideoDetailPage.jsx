@@ -4,7 +4,7 @@ import VideoPlayer from "../components/VideoPlayer";
 import VideoMetadata from "../components/VideoMetadata";
 import TranscriptList from "../components/TranscriptList";
 import VideoSummary from "../components/VideoSummary";
-import TranslationPanel from "../components/TranslationPanel";
+// TranslationPanel import removed
 import TranscriptionJobStatus from "../components/TranscriptionJobStatus";
 import { fetchVideoById, fetchTranscriptsByVideoId } from "../api/videoService";
 
@@ -212,7 +212,7 @@ const VideoDetailPage = () => {
               }}
             />
             {transcript && <VideoSummary transcript={transcript} />}
-            {transcript && <TranslationPanel transcript={transcript} />}
+            {/* TranslationPanel instance removed from here */}
           </div>
         </div>
         <div>
@@ -220,6 +220,7 @@ const VideoDetailPage = () => {
             transcript={transcript}
             currentTime={currentTime}
             onSegmentClick={handleSegmentClick}
+            videoId={id} // videoId prop added
           />
         </div>
       </div>
