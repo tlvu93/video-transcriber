@@ -51,6 +51,7 @@ const VideoDetailPage = () => {
             // Log the first segment to help with debugging
             if (transcript.segments.length > 0) {
               console.log("First segment:", transcript.segments[0]);
+              console.log("MIAU");
             }
 
             // Ensure all segments have the expected properties
@@ -59,9 +60,10 @@ const VideoDetailPage = () => {
               start_time: seg.start_time || 0,
               end_time: seg.end_time || 0,
               text: seg.text || "",
+              speaker: seg.speaker || null,
             }));
           }
-
+          console.log("transcript: ", transcript);
           setTranscript(transcript);
         }
 
@@ -193,6 +195,7 @@ const VideoDetailPage = () => {
                             start_time: seg.start_time || 0,
                             end_time: seg.end_time || 0,
                             text: seg.text || "",
+                            speaker: seg.speaker || null,
                           })
                         );
                       }

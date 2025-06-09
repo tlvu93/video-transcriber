@@ -103,11 +103,54 @@ The system uses a combination of two approaches for service communication:
    cd video-transcriber
    ```
 
-2. Initialize the project:
+2. Configure video directories (optional):
 
+   ```bash
+   cp .env.example .env
+   # Edit .env to configure VIDEO_DIRS and HOST_VIDEO_PATHS
+   ```
+
+3. Set up dynamic volume mounts and start the application:
+
+   ```bash
+   make up
+   ```
+
+   Or manually:
+
+   ```bash
+   ./setup-volumes.sh
+   docker-compose up
+   ```
+
+### Dynamic Video Directory Mounting
+
+The application supports automatically mounting multiple video directories from your host machine. This allows you to process videos from different locations without manually copying them.
+
+**Configuration:**
+
+Edit your `.env` file:
+
+```bash
+# Container paths where videos will be accessible
+VIDEO_DIRS=/app/data/videos,/app/custom_videos,/app/external_videos
+
+# Corresponding host directories (optional)
+HOST_VIDEO_PATHS=/home/user/videos,/media/external/movies,/data/recordings
 ```
+
+**Usage:**
+
+```bash
+# Generate volume mounts and start services
+make up
+
+# Or run setup manually
+./setup-volumes.sh
 docker-compose up
 ```
+
+For detailed configuration options, see [DOCKER_VOLUMES.md](DOCKER_VOLUMES.md).
 
 ## Usage
 
@@ -161,10 +204,10 @@ video-transcriber/
 │   ├── videos/             # Video files
 ├── frontend/               # React frontend
 ├── services/               # Backend services
-│   ├── api-service/        # HTTP API
-│   ├── transcription-service/ # Video transcription
-│   ├── summarization-service/ # Transcript summarization
-│   └── watcher-service/    # File system monitoring
+│   ├── api_service/        # HTTP API
+│   ├── transcription_service/ # Video transcription
+│   ├── summarization_service/ # Transcript summarization
+│   └── watcher_service/    # File system monitoring
 └── docker-compose.yml      # Docker configuration
 ```
 
