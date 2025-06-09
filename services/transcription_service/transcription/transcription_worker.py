@@ -332,14 +332,28 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
 
             # Try speaker diarization
             try:
+                from transcription.config import HF_TOKEN
+
+                print(f"HF_TOKEN: {HF_TOKEN}")
+
                 logger.info("Performing speaker diarization...")
-                diarize_model = whisperx.DiarizationPipeline(
-                    use_auth_token=None, device=device
+                diarize_model = whisperx.diarize.DiarizationPipeline(
+                    use_auth_token=HF_TOKEN,
+                    device=device,
                 )
                 diarize_segments = diarize_model(audio)
                 result = whisperx.assign_word_speakers(diarize_segments, result)
+
+                # Log the number of speakers identified
+                speakers = set(
+                    [s.get("speaker") for s in result["segments"] if "speaker" in s]
+                )
+                logger.info(
+                    f"Speaker diarization completed. Identified {len(speakers)} speakers."
+                )
             except Exception as e:
-                logger.warning(f"Speaker diarization failed: {str(e)}")
+                logger.error(f"Speaker diarization failed with error: {str(e)}")
+                logger.error(f"Error traceback: {traceback.format_exc()}")
 
             # Clean up memory
             del audio

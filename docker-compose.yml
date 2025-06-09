@@ -104,6 +104,7 @@ services:
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
       - MAX_WORKERS=${MAX_WORKERS}
       - VIDEO_DIRS=${VIDEO_DIRS}
+      - HF_TOKEN=${HF_TOKEN}
     command:
       [
         "sh",
