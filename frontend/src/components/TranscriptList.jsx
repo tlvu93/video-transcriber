@@ -128,6 +128,19 @@ const TranscriptList = ({
             selectedLanguage
           );
           if (translatedTranscript) {
+            console.log(
+              "Received translated transcript:",
+              translatedTranscript
+            );
+
+            // Ensure the translated transcript has the correct structure
+            if (!translatedTranscript.segments) {
+              console.warn(
+                "Translated transcript has no segments, creating empty array"
+              );
+              translatedTranscript.segments = [];
+            }
+
             setTranslations((prev) => ({
               ...prev,
               [selectedLanguage]: translatedTranscript,
@@ -159,31 +172,66 @@ const TranscriptList = ({
       console.log(
         `Requesting translation for transcript ${transcriptId} to ${language}`
       );
-      await createTranslationJob(transcriptId, language);
+      const jobResponse = await createTranslationJob(transcriptId, language);
+      console.log("Translation job created:", jobResponse);
 
-      // Wait a bit and then check if translation is available
-      setTimeout(async () => {
-        try {
-          console.log(
-            `Checking for translation of transcript ${transcriptId} to ${language}`
-          );
-          const translatedTranscript = await fetchTranslatedTranscripts(
-            transcriptId,
-            language
-          );
-
-          if (translatedTranscript) {
-            console.log(`Translation received:`, translatedTranscript);
-            setTranslations((prev) => ({
-              ...prev,
-              [language]: translatedTranscript,
-            }));
-          }
-        } catch (error) {
-          console.error("Error checking translation status:", error);
+      // Poll for the translation result multiple times with increasing delays
+      const checkTranslation = async (attempt = 1, maxAttempts = 5) => {
+        if (attempt > maxAttempts) {
+          console.log("Max polling attempts reached");
+          setTranslatingLanguage(null);
+          return;
         }
-        setTranslatingLanguage(null);
-      }, 5000);
+
+        const delay = Math.min(attempt * 2000, 10000); // Increasing delay, max 10 seconds
+        console.log(
+          `Waiting ${delay}ms before checking translation (attempt ${attempt}/${maxAttempts})`
+        );
+
+        setTimeout(async () => {
+          try {
+            console.log(
+              `Checking for translation of transcript ${transcriptId} to ${language}`
+            );
+            const translatedTranscript = await fetchTranslatedTranscripts(
+              transcriptId,
+              language
+            );
+
+            if (translatedTranscript) {
+              console.log(`Translation received:`, translatedTranscript);
+
+              // Ensure the translated transcript has the correct structure
+              if (!translatedTranscript.segments) {
+                console.warn(
+                  "Translated transcript has no segments, creating empty array"
+                );
+                translatedTranscript.segments = [];
+              }
+
+              setTranslations((prev) => ({
+                ...prev,
+                [language]: translatedTranscript,
+              }));
+              setTranslatingLanguage(null);
+            } else {
+              // If no translation yet, try again
+              console.log(`No translation available yet, trying again...`);
+              checkTranslation(attempt + 1, maxAttempts);
+            }
+          } catch (error) {
+            console.error("Error checking translation status:", error);
+            if (attempt < maxAttempts) {
+              checkTranslation(attempt + 1, maxAttempts);
+            } else {
+              setTranslatingLanguage(null);
+            }
+          }
+        }, delay);
+      };
+
+      // Start polling
+      checkTranslation();
     } catch (error) {
       console.error("Error requesting translation:", error);
       setTranslatingLanguage(null);
