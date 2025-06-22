@@ -34,16 +34,20 @@ class OllamaLLM(LLM):
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         """Call the Ollama API and return the response."""
         headers = {"Content-Type": "application/json"}
+        
+        # Updated API format for current Ollama versions
         data = {
             "model": self.model_name,
             "prompt": prompt,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
             "stream": False,
+            "options": {
+                "temperature": self.temperature,
+                "num_predict": self.max_tokens,
+            }
         }
 
         if stop:
-            data["stop"] = stop
+            data["options"]["stop"] = stop
 
         logger.info(f"Sending request to Ollama API at {self.api_url}")
         logger.debug(f"Request data: {data}")
@@ -52,7 +56,8 @@ class OllamaLLM(LLM):
             # Test connectivity to the Ollama API
             try:
                 logger.info("Testing connection to Ollama API...")
-                conn_test = requests.get(self.api_url.replace("/api/generate", ""), timeout=5)
+                base_url = self.api_url.replace("/api/generate", "")
+                conn_test = requests.get(base_url, timeout=5)
                 logger.info(f"Connection test status: {conn_test.status_code}")
             except Exception as e:
                 logger.error(f"Connection test failed: {str(e)}")
@@ -60,17 +65,25 @@ class OllamaLLM(LLM):
             response = requests.post(self.api_url, headers=headers, json=data, timeout=900)
             logger.info(f"Ollama API response status: {response.status_code}")
 
-            response.raise_for_status()
-            result = response.json().get("response", "")
+            if response.status_code != 200:
+                logger.error(f"Ollama API error response: {response.text}")
+                response.raise_for_status()
+
+            result_json = response.json()
+            result = result_json.get("response", "")
+
+            if not result:
+                logger.error(f"Empty response from Ollama API. Full response: {result_json}")
+                raise ValueError("Empty response from Ollama API")
 
             # Remove any <think> tags and their content
             import re
-
             result = re.sub(r"<think>.*?</think>", "", result, flags=re.DOTALL)
             result = result.strip()
 
             logger.info(f"Successfully received response from Ollama API (length: {len(result)})")
             return result
+            
         except requests.exceptions.ConnectionError as e:
             error_msg = f"Error calling Ollama API: Connection refused. Is Ollama running at {self.api_url}?"
             logger.error(error_msg)
@@ -84,10 +97,12 @@ class OllamaLLM(LLM):
         except requests.exceptions.HTTPError as e:
             error_msg = f"Error calling Ollama API: {e}"
             logger.error(error_msg)
-            if e.response.status_code == 404:
+            if hasattr(e, 'response') and e.response.status_code == 404:
                 logger.error(
                     f"The model '{self.model_name}' may not be available. Try running: ollama pull {self.model_name}"
                 )
+            elif hasattr(e, 'response') and e.response.status_code == 500:
+                logger.error(f"Ollama server error. Response: {e.response.text}")
             raise
         except Exception as e:
             error_msg = f"Error calling Ollama API: {e}"
@@ -96,10 +111,43 @@ class OllamaLLM(LLM):
             raise
 
 
+def check_ollama_health() -> bool:
+    """Check if Ollama service is healthy and model is available."""
+    try:
+        # Check if Ollama is running
+        base_url = LLM_HOST.replace("/api/generate", "")
+        response = requests.get(base_url, timeout=5)
+        if response.status_code != 200:
+            logger.error(f"Ollama service not responding. Status: {response.status_code}")
+            return False
+        
+        # Check if model is available
+        models_url = base_url + "/api/tags"
+        models_response = requests.get(models_url, timeout=5)
+        if models_response.status_code == 200:
+            models_data = models_response.json()
+            available_models = [model["name"] for model in models_data.get("models", [])]
+            if LLM_MODEL not in available_models:
+                logger.error(f"Model '{LLM_MODEL}' not found in available models: {available_models}")
+                return False
+        
+        logger.info("Ollama health check passed")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Ollama health check failed: {str(e)}")
+        return False
+
+
 def get_llm():
     """Initialize and return the LLM client."""
     logger.info("Initializing LLM client...")
     try:
+        # Check Ollama health first
+        if not check_ollama_health():
+            logger.error("Ollama health check failed, cannot initialize LLM")
+            return None
+            
         llm = OllamaLLM(model_name=LLM_MODEL, api_url=LLM_HOST, temperature=0.1, max_tokens=2048)
         logger.info("LLM client initialized successfully")
         return llm
@@ -213,7 +261,7 @@ def translate_segments(segments, source_language: str, target_language: str):
 
 def detect_language(text: str) -> str:
     """
-    Detect the language of the text.
+    Detect the language of the text using the LLM.
 
     Args:
         text (str): The text to detect language for
@@ -221,10 +269,43 @@ def detect_language(text: str) -> str:
     Returns:
         str: The detected language code (e.g., "en", "de")
     """
-    # For now, we'll use a simple approach and assume English
-    # In a production system, you would use a language detection library
-    # or ask the LLM to detect the language
+    try:
+        logger.info("Detecting language using LLM...")
+        llm = get_llm()
+        if not llm:
+            logger.warning("Failed to initialize LLM for language detection, defaulting to 'en'")
+            return "en"
 
-    # TODO: Implement proper language detection
-    logger.info("Language detection not implemented, defaulting to 'en'")
-    return "en"
+        # Take a sample of the text for language detection (first 500 characters)
+        sample_text = text[:500] if len(text) > 500 else text
+        
+        # Create language detection prompt
+        supported_langs = ", ".join([f"{code} ({name})" for code, name in SUPPORTED_LANGUAGES.items()])
+        prompt = f"""Detect the language of the following text. Respond with ONLY the two-letter language code.
+
+Supported languages: {supported_langs}
+
+Text to analyze:
+{sample_text}
+
+Language code:"""
+
+        # Get language detection from LLM
+        logger.info("Sending language detection request to LLM")
+        response = llm(prompt).strip().lower()
+        
+        # Extract just the language code (in case LLM returns extra text)
+        detected_lang = response[:2] if len(response) >= 2 else response
+        
+        # Validate the detected language is supported
+        if detected_lang in SUPPORTED_LANGUAGES:
+            logger.info(f"Detected language: {detected_lang} ({SUPPORTED_LANGUAGES[detected_lang]})")
+            return detected_lang
+        else:
+            logger.warning(f"Detected language '{detected_lang}' not in supported languages, defaulting to 'en'")
+            return "en"
+
+    except Exception as e:
+        logger.error(f"Error detecting language: {str(e)}")
+        logger.info("Defaulting to 'en' due to language detection error")
+        return "en"

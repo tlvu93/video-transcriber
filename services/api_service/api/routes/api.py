@@ -181,6 +181,7 @@ class TranscriptCreate(BaseModel):
     content: str
     format: str = "txt"
     status: str = "completed"
+    language_code: Optional[str] = None
     segments: Optional[List[Dict[str, Any]]] = None
 
 
@@ -191,6 +192,7 @@ class TranscriptResponse(BaseModel):
     content: str
     format: str
     status: str
+    language_code: Optional[str] = None
     created_at: Any
     segments: Optional[List[Dict[str, Any]]] = None
 
@@ -844,6 +846,7 @@ async def create_transcript(transcript_data: TranscriptCreate, db: Session = Dep
         content=transcript_data.content,
         format=transcript_data.format,
         status=transcript_data.status,
+        language_code=transcript_data.language_code,
         segments=transcript_data.segments,
     )
     db.add(transcript)

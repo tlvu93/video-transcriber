@@ -38,6 +38,7 @@ class Transcript(Base):
     content = Column(Text, nullable=False)
     format = Column(String, default="txt")  # txt, srt
     status = Column(String, default="pending")  # pending, completed, summarized, error
+    language_code = Column(String, nullable=True)  # Language code of the original transcript (e.g., "en", "de")
     created_at = Column(DateTime, default=datetime.utcnow)
     segments = Column(JSON, nullable=True)  # Store timestamp segments as JSON
 

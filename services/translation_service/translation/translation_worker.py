@@ -114,62 +114,93 @@ def process_translation_job(job_id: str) -> bool:
         True if the job was processed successfully, False otherwise
     """
     start_time = time.time()
+    max_retries = 3
+    retry_count = 0
 
-    try:
-        # Get job details from API
-        job = get_job_from_api(job_id)
-        transcript_id = job["transcript_id"]
-        target_language = job["target_language"]
+    while retry_count < max_retries:
+        try:
+            # Get job details from API
+            job = get_job_from_api(job_id)
+            transcript_id = job["transcript_id"]
+            target_language = job["target_language"]
 
-        # Mark job as started
-        update_job_status_api(job_id, "processing")
+            # Mark job as started (only on first attempt)
+            if retry_count == 0:
+                update_job_status_api(job_id, "processing")
 
-        # Get the transcript from API
-        transcript = get_transcript_from_api(transcript_id)
-        if not transcript:
-            error_details = {"error": f"Transcript not found: {transcript_id}"}
-            update_job_status_api(job_id, "failed", error_details=error_details)
-            return False
+            # Get the transcript from API
+            transcript = get_transcript_from_api(transcript_id)
+            if not transcript:
+                error_details = {"error": f"Transcript not found: {transcript_id}"}
+                update_job_status_api(job_id, "failed", error_details=error_details)
+                return False
 
-        # Get the transcript content and segments
-        transcript_content = transcript["content"]
-        transcript_segments = transcript.get("segments", [])
+            # Get the transcript content and segments
+            transcript_content = transcript["content"]
+            transcript_segments = transcript.get("segments", [])
 
-        # Detect source language if not specified
-        source_language = job.get("source_language")
-        if not source_language:
-            source_language = detect_language(transcript_content)
-            logger.info(f"Detected source language: {source_language}")
+            # Use language from transcript if available, otherwise detect
+            source_language = transcript.get("language_code") or job.get("source_language")
+            if not source_language:
+                logger.info("No source language specified, attempting to detect...")
+                source_language = detect_language(transcript_content)
+                logger.info(f"Detected source language: {source_language}")
+            else:
+                logger.info(f"Using source language from transcript: {source_language}")
 
-        # Generate translation
-        logger.info(f"Translating transcript {transcript_id} from {source_language} to {target_language}")
+            # Check if translation is actually needed
+            if source_language == target_language:
+                logger.info(f"Source and target languages are the same ({source_language}), creating copy")
+                translated_content = transcript_content
+                translated_segments = transcript_segments
+            else:
+                # Generate translation
+                logger.info(f"Translating transcript {transcript_id} from {source_language} to {target_language}")
 
-        # Translate the full content
-        translated_content = translate_text(transcript_content, source_language, target_language)
+                # Translate the full content
+                translated_content = translate_text(transcript_content, source_language, target_language)
 
-        # Translate segments if they exist
-        translated_segments = None
-        if transcript_segments:
-            translated_segments = translate_segments(transcript_segments, source_language, target_language)
+                # Check if translation actually happened (fallback detection)
+                if translated_content == transcript_content and source_language != target_language:
+                    logger.warning("Translation returned original text, this might indicate a translation failure")
 
-        # Create translation record via API
-        create_translation_api(transcript_id, target_language, translated_content, translated_segments)
+                # Translate segments if they exist
+                translated_segments = None
+                if transcript_segments:
+                    translated_segments = translate_segments(transcript_segments, source_language, target_language)
 
-        # Mark job as completed
-        processing_time = time.time() - start_time
-        update_job_status_api(job_id, "completed", processing_time=processing_time)
+            # Create translation record via API
+            create_translation_api(transcript_id, target_language, translated_content, translated_segments)
 
-        logger.info(f"Translation completed for transcript {transcript_id} in {processing_time:.2f} seconds")
-        return True
+            # Mark job as completed
+            processing_time = time.time() - start_time
+            update_job_status_api(job_id, "completed", processing_time=processing_time)
 
-    except Exception as e:
-        logger.error(f"Error processing translation job {job_id}: {str(e)}")
-        logger.error(f"Exception traceback: {traceback.format_exc()}")
+            logger.info(f"Translation completed for transcript {transcript_id} in {processing_time:.2f} seconds")
+            return True
 
-        # Mark job as failed
-        error_details = {"error": str(e), "traceback": traceback.format_exc()}
-        update_job_status_api(job_id, "failed", error_details=error_details)
-        return False
+        except Exception as e:
+            retry_count += 1
+            logger.error(f"Error processing translation job {job_id} (attempt {retry_count}/{max_retries}): {str(e)}")
+            
+            if retry_count < max_retries:
+                wait_time = 2 ** retry_count  # Exponential backoff
+                logger.info(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"All retry attempts failed for job {job_id}")
+                logger.error(f"Exception traceback: {traceback.format_exc()}")
+
+                # Mark job as failed
+                error_details = {
+                    "error": str(e), 
+                    "traceback": traceback.format_exc()[:1000],
+                    "retry_count": retry_count
+                }
+                update_job_status_api(job_id, "failed", error_details=error_details)
+                return False
+
+    return False
 
 
 def get_next_translation_job_api() -> Optional[Dict[str, Any]]:

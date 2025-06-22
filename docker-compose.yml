@@ -211,7 +211,7 @@ services:
         max-file: "3"
 
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama:0.9.2
     volumes:
       - ./ollama-data:/root/.ollama
       - ./ollama-entrypoint.sh:/ollama-entrypoint.sh

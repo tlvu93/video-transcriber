@@ -99,7 +99,7 @@ def update_video_status_api(video_id: str, status: str) -> None:
 
 
 def create_transcript_api(
-    video_id: str, content: str, segments: Optional[List[Dict[str, Any]]] = None
+    video_id: str, content: str, segments: Optional[List[Dict[str, Any]]] = None, language_code: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """Create a transcript via the API."""
     try:
@@ -110,6 +110,7 @@ def create_transcript_api(
             "content": content,
             "format": "txt",
             "status": "completed",
+            "language_code": language_code,
             "segments": segments or [],
         }
 

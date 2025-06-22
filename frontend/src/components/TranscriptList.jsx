@@ -95,10 +95,12 @@ const TranscriptList = ({
 
   // Effect to fetch all available translations when component mounts
   useEffect(() => {
-    if (videoId) {
+    if (transcript && transcript.id) {
       const fetchAllTranslations = async () => {
         try {
-          const allTranslations = await fetchTranslatedTranscripts(videoId);
+          const allTranslations = await fetchTranslatedTranscripts(
+            transcript.id
+          );
           const translationsMap = {};
 
           if (Array.isArray(allTranslations)) {
@@ -115,16 +117,21 @@ const TranscriptList = ({
 
       fetchAllTranslations();
     }
-  }, [videoId]);
+  }, [transcript]);
 
   // Effect to fetch translation when selectedLanguage changes
   useEffect(() => {
-    if (selectedLanguage && !translations[selectedLanguage] && videoId) {
+    if (
+      selectedLanguage &&
+      !translations[selectedLanguage] &&
+      transcript &&
+      transcript.id
+    ) {
       const fetchTranslation = async () => {
         setIsLoadingTranslation(true);
         try {
           const translatedTranscript = await fetchTranslatedTranscripts(
-            videoId,
+            transcript.id,
             selectedLanguage
           );
           if (translatedTranscript) {
@@ -156,7 +163,7 @@ const TranscriptList = ({
       };
       fetchTranslation();
     }
-  }, [selectedLanguage, videoId, translations]);
+  }, [selectedLanguage, transcript, translations]);
 
   // Handle translation request
   const handleRequestTranslation = async (language) => {

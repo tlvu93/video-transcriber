@@ -18,5 +18,8 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-r1")
 # Supported languages
 SUPPORTED_LANGUAGES = {
     "en": "English",
+    "es": "Spanish", 
+    "fr": "French",
     "de": "German",
+    "ja": "Japanese",
 }

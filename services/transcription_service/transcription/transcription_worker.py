@@ -28,6 +28,88 @@ _device = None
 _model_lock = threading.Lock()
 
 
+def normalize_language_code(language_code: str) -> str:
+    """
+    Normalize language code to 2-letter ISO format.
+    
+    Args:
+        language_code: Language code from WhisperX (could be 2 or 3 letters)
+        
+    Returns:
+        Normalized 2-letter language code
+    """
+    if not language_code:
+        return "en"
+    
+    # Convert to lowercase and strip whitespace
+    lang = language_code.lower().strip()
+    
+    # Common language code mappings
+    language_mappings = {
+        # 3-letter to 2-letter ISO codes
+        "eng": "en",
+        "spa": "es", 
+        "fre": "fr",
+        "fra": "fr",
+        "ger": "de",
+        "deu": "de",
+        "jpn": "ja",
+        "chi": "zh",
+        "zho": "zh",
+        "ita": "it",
+        "por": "pt",
+        "rus": "ru",
+        "ara": "ar",
+        "hin": "hi",
+        "kor": "ko",
+        "nld": "nl",
+        "swe": "sv",
+        "nor": "no",
+        "dan": "da",
+        "fin": "fi",
+        "pol": "pl",
+        "ces": "cs",
+        "hun": "hu",
+        "tur": "tr",
+        "heb": "he",
+        "tha": "th",
+        "vie": "vi",
+        "ind": "id",
+        "msa": "ms",
+        "ukr": "uk",
+        "bul": "bg",
+        "hrv": "hr",
+        "slv": "sl",
+        "slk": "sk",
+        "ron": "ro",
+        "ell": "el",
+        "lit": "lt",
+        "lav": "lv",
+        "est": "et",
+        "mlt": "mt",
+        "isl": "is",
+        "gle": "ga",
+        "cym": "cy",
+        "eus": "eu",
+        "cat": "ca",
+        "glg": "gl",
+    }
+    
+    # Check if it's already a 2-letter code
+    if len(lang) == 2:
+        return lang
+    
+    # Try to map 3-letter code to 2-letter
+    if lang in language_mappings:
+        normalized = language_mappings[lang]
+        logger.info(f"Normalized language code '{language_code}' to '{normalized}'")
+        return normalized
+    
+    # If we can't normalize, default to English
+    logger.warning(f"Could not normalize language code '{language_code}', defaulting to 'en'")
+    return "en"
+
+
 def get_whisperx_model():
     """Get or initialize the WhisperX model."""
     global _model, _device
@@ -209,7 +291,7 @@ def get_whisperx_model_for_file(filepath: str):
         return _model, _device
 
 
-def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
+def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict], Optional[str]]:
     """Transcribe audio/video file using WhisperX."""
     audio_path = None
 
@@ -264,6 +346,16 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
                 task="transcribe",
             )
 
+            # Extract and normalize language from result
+            language_code = result.get("language")
+            if language_code:
+                # Normalize language code to 2-letter ISO format
+                language_code = normalize_language_code(language_code)
+                logger.info(f"Detected language from WhisperX: {language_code}")
+            else:
+                logger.warning("No language detected by WhisperX, defaulting to 'en'")
+                language_code = "en"
+
             # Extract text from result
             transcript_text = ""
             if "text" not in result:
@@ -283,7 +375,7 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
             # Skip further processing for short transcripts
             if len(transcript_text.strip()) < 10:
                 logger.warning("Transcript is very short, skipping alignment and diarization")
-                return transcript_text, result.get("segments", [])
+                return transcript_text, result.get("segments", []), language_code
 
             # Try to align timestamps
             try:
@@ -325,7 +417,7 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict]]:
             del audio
             gc.collect()
 
-            return transcript_text, result.get("segments", [])
+            return transcript_text, result.get("segments", []), language_code
 
     except Exception as e:
         logger.error(f"Transcription error: {str(e)}")
@@ -395,11 +487,12 @@ def process_transcription_job(job_id: str) -> bool:
             raise ValueError(f"Video file is empty (0 bytes): {filepath}")
 
         # Transcribe video
-        transcript_text, segments = transcribe_with_whisperx(filepath)
+        transcript_text, segments, language_code = transcribe_with_whisperx(filepath)
 
         # Format segments and create transcript
         formatted_segments = format_segments(segments)
-        transcript = create_transcript_api(video_id, transcript_text, formatted_segments)
+        
+        transcript = create_transcript_api(video_id, transcript_text, formatted_segments, language_code)
         if not transcript:
             raise Exception("Failed to create transcript via API")
 
