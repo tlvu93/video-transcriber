@@ -1,12 +1,23 @@
+import json
 import logging
+import re
 import sys
+import time
 import traceback
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import requests
 from langchain_core.language_models.llms import LLM
-from translation.config import LLM_HOST, LLM_MODEL, SUPPORTED_LANGUAGES
+from translation.config import (
+    LLM_HOST,
+    LLM_MODEL,
+    LLM_REQUEST_TIMEOUT_SECONDS,
+    OLLAMA_HEALTHCHECK_TTL_SECONDS,
+    SUPPORTED_LANGUAGES,
+    TRANSLATION_BATCH_MAX_CHARS,
+    TRANSLATION_BATCH_SIZE,
+)
 
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -17,6 +28,17 @@ logger = logging.getLogger("translator")
 
 logger.info(f"Using LLM at: {LLM_HOST}")
 logger.info(f"Using model: {LLM_MODEL}")
+
+
+def get_ollama_base_url() -> str:
+    """Return the Ollama base URL without the generate path."""
+    return LLM_HOST.removesuffix("/api/generate")
+
+
+HTTP_SESSION = requests.Session()
+_cached_llm: Optional["OllamaLLM"] = None
+_last_health_check_at = 0.0
+_last_health_check_result = False
 
 
 class OllamaLLM(LLM):
@@ -34,8 +56,7 @@ class OllamaLLM(LLM):
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         """Call the Ollama API and return the response."""
         headers = {"Content-Type": "application/json"}
-        
-        # Updated API format for current Ollama versions
+
         data = {
             "model": self.model_name,
             "prompt": prompt,
@@ -43,7 +64,7 @@ class OllamaLLM(LLM):
             "options": {
                 "temperature": self.temperature,
                 "num_predict": self.max_tokens,
-            }
+            },
         }
 
         if stop:
@@ -53,16 +74,12 @@ class OllamaLLM(LLM):
         logger.debug(f"Request data: {data}")
 
         try:
-            # Test connectivity to the Ollama API
-            try:
-                logger.info("Testing connection to Ollama API...")
-                base_url = self.api_url.replace("/api/generate", "")
-                conn_test = requests.get(base_url, timeout=5)
-                logger.info(f"Connection test status: {conn_test.status_code}")
-            except Exception as e:
-                logger.error(f"Connection test failed: {str(e)}")
-
-            response = requests.post(self.api_url, headers=headers, json=data, timeout=900)
+            response = HTTP_SESSION.post(
+                self.api_url,
+                headers=headers,
+                json=data,
+                timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+            )
             logger.info(f"Ollama API response status: {response.status_code}")
 
             if response.status_code != 200:
@@ -77,7 +94,6 @@ class OllamaLLM(LLM):
                 raise ValueError("Empty response from Ollama API")
 
             # Remove any <think> tags and their content
-            import re
             result = re.sub(r"<think>.*?</think>", "", result, flags=re.DOTALL)
             result = result.strip()
 
@@ -90,18 +106,21 @@ class OllamaLLM(LLM):
             logger.error(f"Connection error details: {str(e)}")
             raise
         except requests.exceptions.Timeout as e:
-            error_msg = "Error calling Ollama API: Request timed out after 900 seconds"
+            error_msg = (
+                "Error calling Ollama API: Request timed out after "
+                f"{LLM_REQUEST_TIMEOUT_SECONDS} seconds"
+            )
             logger.error(error_msg)
             logger.error(f"Timeout error details: {str(e)}")
             raise
         except requests.exceptions.HTTPError as e:
             error_msg = f"Error calling Ollama API: {e}"
             logger.error(error_msg)
-            if hasattr(e, 'response') and e.response.status_code == 404:
+            if hasattr(e, "response") and e.response.status_code == 404:
                 logger.error(
                     f"The model '{self.model_name}' may not be available. Try running: ollama pull {self.model_name}"
                 )
-            elif hasattr(e, 'response') and e.response.status_code == 500:
+            elif hasattr(e, "response") and e.response.status_code == 500:
                 logger.error(f"Ollama server error. Response: {e.response.text}")
             raise
         except Exception as e:
@@ -111,49 +130,107 @@ class OllamaLLM(LLM):
             raise
 
 
-def check_ollama_health() -> bool:
+def _normalize_translation_languages(
+    source_language: str, target_language: str
+) -> tuple[str, str, str, str]:
+    """Validate supported languages and return the codes and human names."""
+    if source_language not in SUPPORTED_LANGUAGES:
+        logger.warning(
+            f"Source language {source_language} not in supported languages, defaulting to 'en'"
+        )
+        source_language = "en"
+
+    if target_language not in SUPPORTED_LANGUAGES:
+        logger.warning(
+            f"Target language {target_language} not in supported languages, defaulting to 'en'"
+        )
+        target_language = "en"
+
+    return (
+        source_language,
+        target_language,
+        SUPPORTED_LANGUAGES[source_language],
+        SUPPORTED_LANGUAGES[target_language],
+    )
+
+
+def check_ollama_health(force: bool = False) -> bool:
     """Check if Ollama service is healthy and model is available."""
+    global _last_health_check_at, _last_health_check_result
+
+    now = time.monotonic()
+    if (
+        not force
+        and _last_health_check_at
+        and now - _last_health_check_at < OLLAMA_HEALTHCHECK_TTL_SECONDS
+    ):
+        return _last_health_check_result
+
     try:
         # Check if Ollama is running
-        base_url = LLM_HOST.replace("/api/generate", "")
-        response = requests.get(base_url, timeout=5)
+        base_url = get_ollama_base_url()
+        response = HTTP_SESSION.get(base_url, timeout=5)
         if response.status_code != 200:
             logger.error(f"Ollama service not responding. Status: {response.status_code}")
+            _last_health_check_at = now
+            _last_health_check_result = False
             return False
-        
+
         # Check if model is available
         models_url = base_url + "/api/tags"
-        models_response = requests.get(models_url, timeout=5)
+        models_response = HTTP_SESSION.get(models_url, timeout=5)
         if models_response.status_code == 200:
             models_data = models_response.json()
             available_models = [model["name"] for model in models_data.get("models", [])]
-            if LLM_MODEL not in available_models:
+            if not any(
+                model_name == LLM_MODEL or model_name.startswith(f"{LLM_MODEL}:")
+                for model_name in available_models
+            ):
                 logger.error(f"Model '{LLM_MODEL}' not found in available models: {available_models}")
+                _last_health_check_at = now
+                _last_health_check_result = False
                 return False
-        
+
+        _last_health_check_at = now
+        _last_health_check_result = True
         logger.info("Ollama health check passed")
         return True
-        
     except Exception as e:
         logger.error(f"Ollama health check failed: {str(e)}")
+        _last_health_check_at = now
+        _last_health_check_result = False
         return False
 
 
-def get_llm():
+def get_llm(force_refresh: bool = False):
     """Initialize and return the LLM client."""
+    global _cached_llm
+
+    if force_refresh:
+        _cached_llm = None
+
+    if _cached_llm is not None and check_ollama_health():
+        return _cached_llm
+
     logger.info("Initializing LLM client...")
     try:
         # Check Ollama health first
-        if not check_ollama_health():
+        if not check_ollama_health(force=True):
             logger.error("Ollama health check failed, cannot initialize LLM")
             return None
-            
-        llm = OllamaLLM(model_name=LLM_MODEL, api_url=LLM_HOST, temperature=0.1, max_tokens=2048)
+
+        _cached_llm = OllamaLLM(
+            model_name=LLM_MODEL,
+            api_url=LLM_HOST,
+            temperature=0.1,
+            max_tokens=2048,
+        )
         logger.info("LLM client initialized successfully")
-        return llm
+        return _cached_llm
     except Exception as e:
         logger.error(f"Error initializing LLM: {e}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
+        _cached_llm = None
         return None
 
 
@@ -173,17 +250,12 @@ def translate_text(text: str, source_language: str, target_language: str) -> str
         logger.info(f"Source and target languages are the same ({source_language}), returning original text")
         return text
 
-    # Validate languages
-    if source_language not in SUPPORTED_LANGUAGES:
-        logger.warning(f"Source language {source_language} not in supported languages, defaulting to 'en'")
-        source_language = "en"
-
-    if target_language not in SUPPORTED_LANGUAGES:
-        logger.warning(f"Target language {target_language} not in supported languages, defaulting to 'en'")
-        target_language = "en"
-
-    source_language_name = SUPPORTED_LANGUAGES[source_language]
-    target_language_name = SUPPORTED_LANGUAGES[target_language]
+    (
+        source_language,
+        target_language,
+        source_language_name,
+        target_language_name,
+    ) = _normalize_translation_languages(source_language, target_language)
 
     logger.info(f"Translating from {source_language_name} to {target_language_name}")
     logger.info(f"Text length: {len(text)} characters")
@@ -226,6 +298,139 @@ Here is the transcript to translate:
         return text  # Return original text on error
 
 
+def _chunk_text_batches(texts: Sequence[str]) -> List[List[str]]:
+    """Chunk text inputs to keep prompts within a practical size."""
+    batches: List[List[str]] = []
+    current_batch: List[str] = []
+    current_chars = 0
+
+    for text in texts:
+        text_length = len(text)
+        if current_batch and (
+            len(current_batch) >= TRANSLATION_BATCH_SIZE
+            or current_chars + text_length > TRANSLATION_BATCH_MAX_CHARS
+        ):
+            batches.append(current_batch)
+            current_batch = []
+            current_chars = 0
+
+        current_batch.append(text)
+        current_chars += text_length
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+
+def _extract_json_array(response: str) -> List[str]:
+    """Extract a JSON array of translated strings from an LLM response."""
+    response_text = response.strip()
+    fenced_match = re.search(r"```(?:json)?\s*(.*?)\s*```", response_text, re.DOTALL)
+    if fenced_match:
+        response_text = fenced_match.group(1).strip()
+
+    start_index = response_text.find("[")
+    end_index = response_text.rfind("]")
+    if start_index == -1 or end_index == -1 or end_index < start_index:
+        raise ValueError("LLM response did not contain a JSON array")
+
+    candidate = response_text[start_index : end_index + 1]
+    parsed = json.loads(candidate)
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        raise ValueError("LLM response did not contain a string array")
+
+    return parsed
+
+
+def translate_texts(
+    texts: Sequence[str], source_language: str, target_language: str
+) -> List[str]:
+    """
+    Translate a collection of text snippets in batches.
+
+    This keeps the number of expensive LLM requests much lower than translating
+    each segment individually.
+    """
+    if not texts:
+        return []
+
+    if source_language == target_language:
+        return list(texts)
+
+    (
+        source_language,
+        target_language,
+        source_language_name,
+        target_language_name,
+    ) = _normalize_translation_languages(source_language, target_language)
+
+    logger.info(
+        "Batch translating %s texts from %s to %s",
+        len(texts),
+        source_language_name,
+        target_language_name,
+    )
+
+    llm = get_llm()
+    if not llm:
+        logger.warning("Failed to initialize LLM for batch translation, returning original texts")
+        return list(texts)
+
+    translated_texts: List[str] = []
+    batches = _chunk_text_batches(texts)
+
+    for batch_index, batch in enumerate(batches, start=1):
+        logger.info(
+            "Translating batch %s/%s with %s text items (%s chars)",
+            batch_index,
+            len(batches),
+            len(batch),
+            sum(len(item) for item in batch),
+        )
+
+        prompt = f"""You are a professional translator. Translate each string in the JSON array from {source_language_name} to {target_language_name}.
+
+IMPORTANT RULES:
+1. Return valid JSON only.
+2. Return a JSON array of strings with the exact same number of items and the same order as the input.
+3. Translate only the text content of each array entry.
+4. Do not add commentary, markdown, code fences, or metadata.
+5. Preserve speaker labels, timestamps, and special terminology when present in the text.
+
+Input JSON:
+{json.dumps(list(batch), ensure_ascii=False)}
+
+Output JSON:"""
+
+        try:
+            batch_response = llm(prompt)
+            translated_batch = _extract_json_array(batch_response)
+            if len(translated_batch) != len(batch):
+                raise ValueError(
+                    "Translated batch length mismatch: "
+                    f"expected {len(batch)}, got {len(translated_batch)}"
+                )
+            translated_texts.extend(translated_batch)
+        except Exception as e:
+            logger.warning(
+                "Batch translation failed for batch %s/%s, falling back to per-item translation: %s",
+                batch_index,
+                len(batches),
+                e,
+            )
+            translated_texts.extend(
+                [
+                    translate_text(text, source_language, target_language)
+                    if text
+                    else text
+                    for text in batch
+                ]
+            )
+
+    return translated_texts
+
+
 def translate_segments(segments, source_language: str, target_language: str):
     """
     Translate transcript segments.
@@ -243,15 +448,21 @@ def translate_segments(segments, source_language: str, target_language: str):
 
     logger.info(f"Translating {len(segments)} segments from {source_language} to {target_language}")
 
-    translated_segments = []
+    source_texts = [segment.get("text", "") or "" for segment in segments]
+    translated_texts = translate_texts(
+        source_texts,
+        source_language,
+        target_language,
+    )
 
-    for segment in segments:
+    translated_segments = []
+    for segment, translated_text in zip(segments, translated_texts):
         # Create a copy of the segment
         translated_segment = segment.copy()
 
         # Translate only the text field
-        if "text" in segment and segment["text"]:
-            translated_segment["text"] = translate_text(segment["text"], source_language, target_language)
+        if segment.get("text"):
+            translated_segment["text"] = translated_text
 
         translated_segments.append(translated_segment)
 
@@ -278,9 +489,11 @@ def detect_language(text: str) -> str:
 
         # Take a sample of the text for language detection (first 500 characters)
         sample_text = text[:500] if len(text) > 500 else text
-        
+
         # Create language detection prompt
-        supported_langs = ", ".join([f"{code} ({name})" for code, name in SUPPORTED_LANGUAGES.items()])
+        supported_langs = ", ".join(
+            [f"{code} ({name})" for code, name in SUPPORTED_LANGUAGES.items()]
+        )
         prompt = f"""Detect the language of the following text. Respond with ONLY the two-letter language code.
 
 Supported languages: {supported_langs}

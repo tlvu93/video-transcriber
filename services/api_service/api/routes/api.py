@@ -18,6 +18,7 @@ from api.job_queue import (
     mark_job_failed,
     mark_job_started,
 )
+from api.live_updates import build_live_update_filters, live_update_manager
 from api.models import (
     SummarizationJob,
     Summary,
@@ -28,11 +29,16 @@ from api.models import (
     Video,
 )
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from common.messaging import (
+    EVENT_JOB_STATUS_CHANGED,
+    EVENT_SUMMARY_CREATED,
+    EVENT_TRANSCRIPTION_CREATED,
+    EVENT_TRANSLATION_CREATED,
+    EVENT_VIDEO_CREATED,
     RabbitMQClient,
     publish_job_status_changed_event,
     publish_summary_created_event,
@@ -54,6 +60,57 @@ app = FastAPI(title="Video Transcriber API")
 # Ensure directories exist
 os.makedirs(VIDEO_DIR, exist_ok=True)
 
+EVENT_VIDEO_UPDATED = "video.updated"
+EVENT_TRANSCRIPT_UPDATED = "transcript.updated"
+EVENT_TRANSLATED_TRANSCRIPT_UPDATED = "translated_transcript.updated"
+
+
+async def publish_live_update(event_type: str, **payload: Any) -> None:
+    await live_update_manager.publish(
+        {
+            "type": event_type,
+            **{key: value for key, value in payload.items() if value is not None},
+        }
+    )
+
+
+async def publish_job_live_update(
+    job_type: str,
+    job_id: str,
+    status: str,
+    *,
+    video_id: Optional[str] = None,
+    transcript_id: Optional[str] = None,
+) -> None:
+    await publish_live_update(
+        EVENT_JOB_STATUS_CHANGED,
+        job_id=job_id,
+        job_type=job_type,
+        status=status,
+        transcript_id=transcript_id,
+        video_id=video_id,
+    )
+
+
+@app.get("/events/stream")
+async def stream_live_updates(
+    request: Request,
+    video_id: Optional[str] = None,
+    transcript_id: Optional[str] = None,
+):
+    filters = build_live_update_filters(video_id=video_id, transcript_id=transcript_id)
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+
+    return StreamingResponse(
+        live_update_manager.stream(request, filters),
+        headers=headers,
+        media_type="text/event-stream",
+    )
+
 
 # Pydantic models for request/response
 class VideoCreate(BaseModel):
@@ -74,6 +131,10 @@ class VideoResponse(BaseModel):
     created_at: Any
     file_hash: Optional[str] = None
     video_metadata: Optional[Dict[str, Any]] = None
+
+
+class YoutubeDownloadRequest(BaseModel):
+    url: str
 
 
 class TranscriptionJobCreate(BaseModel):
@@ -175,6 +236,11 @@ class TranslatedTranscriptResponse(BaseModel):
     created_at: Any
 
 
+class TranscriptSegmentsUpdate(BaseModel):
+    segments: List[Dict[str, Any]]
+    content: Optional[str] = None
+
+
 class TranscriptCreate(BaseModel):
     video_id: str
     source_type: str = "video"
@@ -253,12 +319,98 @@ async def upload_video(
     except Exception as e:
         logger.error(f"Error publishing event: {str(e)}")
 
+    await publish_live_update(
+        EVENT_VIDEO_CREATED,
+        filename=video.filename,
+        status=video.status,
+        video_id=str(video.id),
+    )
+    await publish_job_live_update(
+        "transcription",
+        str(job.id),
+        "pending",
+        video_id=str(video.id),
+    )
+
     return {
         "id": video.id,
         "filename": video.filename,
         "status": video.status,
         "created_at": video.created_at,
     }
+
+
+@app.post("/videos/youtube", response_model=VideoResponse)
+async def download_youtube_video(
+    background_tasks: BackgroundTasks,
+    request: YoutubeDownloadRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Download a video from YouTube (or other supported sites) and start transcription.
+    """
+    import yt_dlp
+    import uuid
+
+    logger.info(f"Received YouTube download request: {request.url}")
+
+    # Generate a unique filename using UUID to avoid collisions
+    unique_id = str(uuid.uuid4())[:8]
+    
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': os.path.join(VIDEO_DIR, f'%(title)s_{unique_id}.%(ext)s'),
+        'restrictfilenames': True,
+        'noplaylist': True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(request.url, download=True)
+            filename = ydl.prepare_filename(info)
+            basename = os.path.basename(filename)
+            
+            logger.info(f"Successfully downloaded YouTube video to: {filename}")
+
+            # Create video record
+            video = Video(filename=basename)
+            db.add(video)
+            db.commit()
+            db.refresh(video)
+
+            # Create transcription job
+            job = create_transcription_job(video.id, db)
+
+            # Publish events
+            try:
+                rabbitmq_client.connect()
+                publish_video_created_event(rabbitmq_client, str(video.id), video.filename)
+                publish_job_status_changed_event(rabbitmq_client, "transcription", str(job.id), "pending")
+            except Exception as e:
+                logger.error(f"Error publishing event: {str(e)}")
+
+            await publish_live_update(
+                EVENT_VIDEO_CREATED,
+                filename=video.filename,
+                status=video.status,
+                video_id=str(video.id),
+            )
+            await publish_job_live_update(
+                "transcription",
+                str(job.id),
+                "pending",
+                video_id=str(video.id),
+            )
+
+            return {
+                "id": str(video.id),
+                "filename": video.filename,
+                "status": video.status,
+                "created_at": video.created_at,
+            }
+    except Exception as e:
+        logger.error(f"Error downloading YouTube video: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error downloading YouTube video: {str(e)}")
 
 
 @app.post("/videos/register", response_model=VideoResponse)
@@ -317,6 +469,12 @@ async def register_video(video_data: VideoCreate, db: Session = Depends(get_db))
         existing_video.status = "pending"
         db.commit()
         db.refresh(existing_video)
+        await publish_live_update(
+            EVENT_VIDEO_UPDATED,
+            filename=existing_video.filename,
+            status=existing_video.status,
+            video_id=str(existing_video.id),
+        )
         return {
             "id": str(existing_video.id),
             "filename": existing_video.filename,
@@ -357,6 +515,12 @@ async def register_video(video_data: VideoCreate, db: Session = Depends(get_db))
     db.refresh(video)
 
     logger.info(f"Added video {video_data.filename} to the database with ID: {video.id}")
+    await publish_live_update(
+        EVENT_VIDEO_CREATED,
+        filename=video.filename,
+        status=video.status,
+        video_id=str(video.id),
+    )
 
     return {
         "id": str(video.id),
@@ -449,6 +613,13 @@ async def create_transcription_job_endpoint(job_data: TranscriptionJobCreate, db
     except Exception as e:
         logger.error(f"Error publishing event: {str(e)}")
 
+    await publish_job_live_update(
+        "transcription",
+        str(job.id),
+        job.status,
+        video_id=str(job.video_id),
+    )
+
     return job
 
 
@@ -471,13 +642,18 @@ async def get_next_transcription_job_endpoint(db: Session = Depends(get_db)):
 
 
 @app.get("/transcription-jobs", response_model=List[TranscriptionJobResponse])
-async def get_transcription_jobs(status: Optional[str] = None, db: Session = Depends(get_db)):
+async def get_transcription_jobs(
+    status: Optional[str] = None,
+    video_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """
-    Get all transcription jobs, optionally filtered by status.
-    Used by the transcription worker.
+    Get all transcription jobs, optionally filtered by status and video_id.
+    Used by the transcription worker and frontend.
 
     Args:
         status: Optional status to filter by
+        video_id: Optional video ID to filter by
         db: Database session
 
     Returns:
@@ -487,6 +663,9 @@ async def get_transcription_jobs(status: Optional[str] = None, db: Session = Dep
 
     if status:
         query = query.filter(TranscriptionJob.status == status)
+    
+    if video_id:
+        query = query.filter(TranscriptionJob.video_id == video_id)
 
     jobs = query.order_by(TranscriptionJob.created_at).all()
 
@@ -540,6 +719,13 @@ async def start_transcription_job(job_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error publishing event: {str(e)}")
 
+    await publish_job_live_update(
+        "transcription",
+        str(job.id),
+        job.status,
+        video_id=str(job.video_id),
+    )
+
     return job
 
 
@@ -562,6 +748,12 @@ async def complete_transcription_job(job_id: str, update_data: TranscriptionJobU
         raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
 
     mark_job_completed(job, update_data.processing_time_seconds, db)
+    await publish_job_live_update(
+        "transcription",
+        str(job.id),
+        job.status,
+        video_id=str(job.video_id),
+    )
     return job
 
 
@@ -584,6 +776,12 @@ async def fail_transcription_job(job_id: str, update_data: TranscriptionJobUpdat
         raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
 
     mark_job_failed(job, update_data.error_details, db)
+    await publish_job_live_update(
+        "transcription",
+        str(job.id),
+        job.status,
+        video_id=str(job.video_id),
+    )
     return job
 
 
@@ -619,6 +817,12 @@ async def retry_transcription_job(job_id: str, db: Session = Depends(get_db)):
     db.refresh(job)
 
     logger.info(f"Transcription job {job_id} has been reset to pending status for retry")
+    await publish_job_live_update(
+        "transcription",
+        str(job.id),
+        job.status,
+        video_id=str(job.video_id),
+    )
     return job
 
 
@@ -644,6 +848,12 @@ async def create_summarization_job_endpoint(job_data: SummarizationJobCreate, db
 
     # Create a summarization job
     job = create_summarization_job(job_data.transcript_id, db)
+    await publish_job_live_update(
+        "summarization",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+    )
 
     return job
 
@@ -664,6 +874,40 @@ async def get_next_summarization_job_endpoint(db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail="No pending summarization jobs")
     return job
+
+
+@app.get("/summarization-jobs", response_model=List[SummarizationJobResponse])
+async def get_summarization_jobs(
+    status: Optional[str] = None,
+    transcript_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Get all summarization jobs, optionally filtered by status and transcript_id.
+    Used by the summarization worker and frontend.
+
+    Args:
+        status: Optional status to filter by
+        transcript_id: Optional transcript ID to filter by
+        db: Database session
+
+    Returns:
+        List of summarization jobs
+    """
+    query = db.query(SummarizationJob)
+
+    if status:
+        query = query.filter(SummarizationJob.status == status)
+    
+    if transcript_id:
+        query = query.filter(SummarizationJob.transcript_id == transcript_id)
+
+    jobs = query.order_by(SummarizationJob.created_at).all()
+
+    if not jobs and status:
+        raise HTTPException(status_code=404, detail=f"No summarization jobs with status: {status}")
+
+    return jobs
 
 
 @app.get("/summarization-jobs/{job_id}", response_model=SummarizationJobResponse)
@@ -702,6 +946,12 @@ async def start_summarization_job(job_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
 
     mark_job_started(job, db)
+    await publish_job_live_update(
+        "summarization",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+    )
     return job
 
 
@@ -724,6 +974,12 @@ async def complete_summarization_job(job_id: str, update_data: SummarizationJobU
         raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
 
     mark_job_completed(job, update_data.processing_time_seconds, db)
+    await publish_job_live_update(
+        "summarization",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+    )
     return job
 
 
@@ -746,6 +1002,12 @@ async def fail_summarization_job(job_id: str, update_data: SummarizationJobUpdat
         raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
 
     mark_job_failed(job, update_data.error_details, db)
+    await publish_job_live_update(
+        "summarization",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+    )
     return job
 
 
@@ -789,6 +1051,12 @@ async def create_summary(summary_data: SummaryCreate, db: Session = Depends(get_
     except Exception as e:
         logger.error(f"Error publishing event: {str(e)}")
 
+    await publish_live_update(
+        EVENT_SUMMARY_CREATED,
+        summary_id=str(summary.id),
+        transcript_id=str(summary.transcript_id),
+    )
+
     return summary
 
 
@@ -815,6 +1083,42 @@ async def update_transcript(transcript_id: str, update_data: dict, db: Session =
 
     db.commit()
     db.refresh(transcript)
+
+    await publish_live_update(
+        EVENT_TRANSCRIPT_UPDATED,
+        status=transcript.status,
+        transcript_id=str(transcript.id),
+        video_id=str(transcript.video_id) if transcript.video_id else None,
+    )
+
+    return transcript
+
+
+@app.put("/transcripts/{transcript_id}/segments", response_model=TranscriptResponse)
+async def update_transcript_segments(transcript_id: str, update_data: TranscriptSegmentsUpdate, db: Session = Depends(get_db)):
+    """
+    Update the segments (and optionally the full text content) of a transcript.
+    Used by the frontend for interactive transcript editing.
+    """
+    transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
+    if not transcript:
+        raise HTTPException(status_code=404, detail=f"Transcript not found: {transcript_id}")
+
+    transcript.segments = update_data.segments
+    if update_data.content is not None:
+        transcript.content = update_data.content
+    
+    # If segments were updated, we could potentially regenerate the full content string here if not provided,
+    # but trusting the frontend's content string if provided is usually easier.
+    
+    db.commit()
+    db.refresh(transcript)
+
+    await publish_live_update(
+        EVENT_TRANSCRIPT_UPDATED,
+        transcript_id=str(transcript.id),
+        video_id=str(transcript.video_id) if transcript.video_id else None,
+    )
 
     return transcript
 
@@ -860,6 +1164,12 @@ async def create_transcript(transcript_data: TranscriptCreate, db: Session = Dep
     except Exception as e:
         logger.error(f"Error publishing event: {str(e)}")
 
+    await publish_live_update(
+        EVENT_TRANSCRIPTION_CREATED,
+        transcript_id=str(transcript.id),
+        video_id=str(transcript.video_id),
+    )
+
     return transcript
 
 
@@ -889,6 +1199,13 @@ async def update_video(video_id: str, update_data: VideoUpdate, db: Session = De
 
     db.commit()
     db.refresh(video)
+
+    await publish_live_update(
+        EVENT_VIDEO_UPDATED,
+        filename=video.filename,
+        status=video.status,
+        video_id=str(video.id),
+    )
 
     return {
         "id": str(video.id),
@@ -983,21 +1300,59 @@ def download_video(video_id: str, request: Request, db: Session = Depends(get_db
         if not found:
             raise HTTPException(status_code=404, detail=f"Video file not found: {filename}")
 
-    # Get file size
-    file_size = os.stat(file_path)[stat.ST_SIZE]
+    file_stat = os.stat(file_path)
+    file_size = file_stat[stat.ST_SIZE]
+
+    # Determine the media type based on file extension
+    import mimetypes
+    import urllib.parse
+    from email.utils import formatdate
+
+    file_extension = os.path.splitext(video.filename)[1].lower()
+    media_type = mimetypes.guess_type(video.filename)[0]
+
+    # Default to video/mp4 if we can't determine the media type
+    if not media_type:
+        if file_extension in [".mp4", ".m4v"]:
+            media_type = "video/mp4"
+        elif file_extension in [".mov", ".qt"]:
+            media_type = "video/quicktime"
+        elif file_extension in [".avi"]:
+            media_type = "video/x-msvideo"
+        elif file_extension in [".wmv"]:
+            media_type = "video/x-ms-wmv"
+        elif file_extension in [".webm"]:
+            media_type = "video/webm"
+        else:
+            media_type = "video/mp4"  # Default fallback
+
+    # Use RFC 6266/5987 encoding for the filename to handle non-Latin-1 characters
+    ascii_filename = video.filename.encode("ascii", "replace").decode("ascii")
+    utf8_filename = urllib.parse.quote(video.filename.encode("utf-8"))
+    etag = f"W/\"{file_size}-{int(file_stat.st_mtime)}\""
+    cache_headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=604800, immutable",
+        "Content-Disposition": f"inline; filename=\"{ascii_filename}\"; filename*=UTF-8''{utf8_filename}",
+        "ETag": etag,
+        "Last-Modified": formatdate(file_stat.st_mtime, usegmt=True),
+    }
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=cache_headers)
 
     # Check if Range header exists
     range_header = request.headers.get("Range", None)
 
     # If no Range header, return the full file
     if range_header is None:
-        return FileResponse(file_path, filename=video.filename)
+        return FileResponse(file_path, headers=cache_headers, media_type=media_type)
 
     # Parse the Range header
     range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
     if not range_match:
         # If Range header is invalid, return the full file
-        return FileResponse(file_path, filename=video.filename)
+        return FileResponse(file_path, headers=cache_headers, media_type=media_type)
 
     # Extract start and end bytes
     start_byte = int(range_match.group(1))
@@ -1022,43 +1377,11 @@ def download_video(video_id: str, request: Request, db: Session = Depends(get_db
                 yield chunk
                 remaining -= len(chunk)
 
-    # Create response headers
-    # Use RFC 6266/5987 encoding for the filename to handle non-Latin-1 characters
-    import urllib.parse
-
-    # Regular ASCII filename for backward compatibility
-    ascii_filename = video.filename.encode("ascii", "replace").decode("ascii")
-
-    # UTF-8 encoded filename with proper format: filename*=UTF-8''encoded-filename
-    utf8_filename = urllib.parse.quote(video.filename.encode("utf-8"))
-
     headers = {
+        **cache_headers,
         "Content-Range": f"bytes {start_byte}-{end_byte}/{file_size}",
-        "Accept-Ranges": "bytes",
         "Content-Length": str(content_length),
-        "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{utf8_filename}",
     }
-
-    # Determine the media type based on file extension
-    import mimetypes
-
-    file_extension = os.path.splitext(video.filename)[1].lower()
-    media_type = mimetypes.guess_type(video.filename)[0]
-
-    # Default to video/mp4 if we can't determine the media type
-    if not media_type:
-        if file_extension in [".mp4", ".m4v"]:
-            media_type = "video/mp4"
-        elif file_extension in [".mov", ".qt"]:
-            media_type = "video/quicktime"
-        elif file_extension in [".avi"]:
-            media_type = "video/x-msvideo"
-        elif file_extension in [".wmv"]:
-            media_type = "video/x-ms-wmv"
-        elif file_extension in [".webm"]:
-            media_type = "video/webm"
-        else:
-            media_type = "video/mp4"  # Default fallback
 
     logger.info(f"Serving video {video.filename} with media type: {media_type}")
 
@@ -1164,6 +1487,23 @@ async def create_translation_job_endpoint(job_data: TranslationJobCreate, db: Se
     if not transcript:
         raise HTTPException(status_code=404, detail=f"Transcript not found: {job_data.transcript_id}")
 
+    existing_job = (
+        db.query(TranslationJob)
+        .filter(TranslationJob.transcript_id == job_data.transcript_id)
+        .filter(TranslationJob.target_language == job_data.target_language)
+        .filter(TranslationJob.status.in_(["pending", "processing"]))
+        .order_by(TranslationJob.created_at.desc())
+        .first()
+    )
+    if existing_job:
+        logger.info(
+            "Reusing existing translation job %s for transcript %s to %s",
+            existing_job.id,
+            job_data.transcript_id,
+            job_data.target_language,
+        )
+        return existing_job
+
     # Create a translation job
     job = create_translation_job(job_data.transcript_id, job_data.target_language, job_data.source_language, db)
 
@@ -1174,6 +1514,13 @@ async def create_translation_job_endpoint(job_data: TranslationJobCreate, db: Se
         logger.info(f"Published job.status.changed event for translation job {job.id}")
     except Exception as e:
         logger.error(f"Error publishing event: {str(e)}")
+
+    await publish_job_live_update(
+        "translation",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+    )
 
     return job
 
@@ -1194,6 +1541,40 @@ async def get_next_translation_job_endpoint(db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail="No pending translation jobs")
     return job
+
+
+@app.get("/translation-jobs", response_model=List[TranslationJobResponse])
+async def get_translation_jobs(
+    status: Optional[str] = None,
+    transcript_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Get all translation jobs, optionally filtered by status and transcript_id.
+    Used by the translation worker and frontend.
+
+    Args:
+        status: Optional status to filter by
+        transcript_id: Optional transcript ID to filter by
+        db: Database session
+
+    Returns:
+        List of translation jobs
+    """
+    query = db.query(TranslationJob)
+
+    if status:
+        query = query.filter(TranslationJob.status == status)
+
+    if transcript_id:
+        query = query.filter(TranslationJob.transcript_id == transcript_id)
+
+    jobs = query.order_by(TranslationJob.created_at).all()
+
+    if not jobs and status:
+        raise HTTPException(status_code=404, detail=f"No translation jobs with status: {status}")
+
+    return jobs
 
 
 @app.get("/translation-jobs/{job_id}", response_model=TranslationJobResponse)
@@ -1240,6 +1621,13 @@ async def start_translation_job(job_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error publishing event: {str(e)}")
 
+    await publish_job_live_update(
+        "translation",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+    )
+
     return job
 
 
@@ -1262,6 +1650,17 @@ async def complete_translation_job(job_id: str, update_data: TranslationJobUpdat
         raise HTTPException(status_code=404, detail=f"Translation job not found: {job_id}")
 
     mark_job_completed(job, update_data.processing_time_seconds, db)
+    if update_data.error_details is not None:
+        job.error_details = update_data.error_details
+        db.commit()
+        db.refresh(job)
+
+    await publish_job_live_update(
+        "translation",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+    )
     return job
 
 
@@ -1284,6 +1683,12 @@ async def fail_translation_job(job_id: str, update_data: TranslationJobUpdate, d
         raise HTTPException(status_code=404, detail=f"Translation job not found: {job_id}")
 
     mark_job_failed(job, update_data.error_details, db)
+    await publish_job_live_update(
+        "translation",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+    )
     return job
 
 
@@ -1312,27 +1717,56 @@ async def create_translated_transcript(transcript_data: TranslatedTranscriptCrea
             detail=f"Transcript not found: {transcript_data.transcript_id}",
         )
 
-    # Create a translated transcript
-    translated_transcript = TranslatedTranscript(
-        transcript_id=transcript_data.transcript_id,
-        language=transcript_data.language,
-        content=transcript_data.content,
-        segments=transcript_data.segments,
-        status=transcript_data.status,
+    translated_transcript = (
+        db.query(TranslatedTranscript)
+        .filter(TranslatedTranscript.transcript_id == transcript_data.transcript_id)
+        .filter(TranslatedTranscript.language == transcript_data.language)
+        .order_by(TranslatedTranscript.created_at.desc())
+        .first()
     )
-    db.add(translated_transcript)
+
+    is_existing_translation = translated_transcript is not None
+    if translated_transcript:
+        translated_transcript.content = transcript_data.content
+        translated_transcript.segments = transcript_data.segments
+        translated_transcript.status = transcript_data.status
+    else:
+        translated_transcript = TranslatedTranscript(
+            transcript_id=transcript_data.transcript_id,
+            language=transcript_data.language,
+            content=transcript_data.content,
+            segments=transcript_data.segments,
+            status=transcript_data.status,
+        )
+        db.add(translated_transcript)
+
     db.commit()
     db.refresh(translated_transcript)
 
-    # Publish translated transcript created event
-    try:
-        rabbitmq_client.connect()
-        publish_translation_created_event(
-            rabbitmq_client, str(translated_transcript.id), str(translated_transcript.transcript_id)
+    if is_existing_translation:
+        await publish_live_update(
+            EVENT_TRANSLATED_TRANSCRIPT_UPDATED,
+            language=translated_transcript.language,
+            transcript_id=str(translated_transcript.transcript_id),
+            translated_transcript_id=str(translated_transcript.id),
         )
-        logger.info(f"Published translation.created event for translation {translated_transcript.id}")
-    except Exception as e:
-        logger.error(f"Error publishing event: {str(e)}")
+    else:
+        # Publish translated transcript created event
+        try:
+            rabbitmq_client.connect()
+            publish_translation_created_event(
+                rabbitmq_client, str(translated_transcript.id), str(translated_transcript.transcript_id)
+            )
+            logger.info(f"Published translation.created event for translation {translated_transcript.id}")
+        except Exception as e:
+            logger.error(f"Error publishing event: {str(e)}")
+
+        await publish_live_update(
+            EVENT_TRANSLATION_CREATED,
+            language=translated_transcript.language,
+            transcript_id=str(translated_transcript.transcript_id),
+            translated_transcript_id=str(translated_transcript.id),
+        )
 
     return translated_transcript
 
@@ -1360,21 +1794,23 @@ def list_translated_transcripts(
     if language:
         query = query.filter(TranslatedTranscript.language == language)
 
-    translated_transcripts = query.all()
-    return translated_transcripts
+    translated_transcripts = query.order_by(TranslatedTranscript.created_at.desc()).all()
+
+    if language:
+        return translated_transcripts
+
+    latest_translations_by_language = {}
+    for translated_transcript in translated_transcripts:
+        if translated_transcript.language not in latest_translations_by_language:
+            latest_translations_by_language[translated_transcript.language] = translated_transcript
+
+    return list(latest_translations_by_language.values())
 
 
 @app.get("/translated-transcripts/{translated_transcript_id}")
 def get_translated_transcript(translated_transcript_id: str, db: Session = Depends(get_db)):
     """
     Get a translated transcript by ID.
-
-    Args:
-        translated_transcript_id: The ID of the translated transcript
-        db: Database session
-
-    Returns:
-        The translated transcript object
     """
     translated_transcript = (
         db.query(TranslatedTranscript).filter(TranslatedTranscript.id == translated_transcript_id).first()
@@ -1382,3 +1818,79 @@ def get_translated_transcript(translated_transcript_id: str, db: Session = Depen
     if not translated_transcript:
         raise HTTPException(status_code=404, detail="Translated transcript not found")
     return translated_transcript
+
+
+@app.put("/translated-transcripts/{translated_transcript_id}/segments", response_model=TranslatedTranscriptResponse)
+async def update_translated_transcript_segments(translated_transcript_id: str, update_data: TranscriptSegmentsUpdate, db: Session = Depends(get_db)):
+    """
+    Update the segments (and optionally the full text content) of a translated transcript.
+    Used by the frontend for interactive transcript editing.
+    """
+    translated_transcript = db.query(TranslatedTranscript).filter(TranslatedTranscript.id == translated_transcript_id).first()
+    if not translated_transcript:
+        raise HTTPException(status_code=404, detail=f"Translated transcript not found: {translated_transcript_id}")
+
+    translated_transcript.segments = update_data.segments
+    if update_data.content is not None:
+        translated_transcript.content = update_data.content
+    
+    db.commit()
+    db.refresh(translated_transcript)
+
+    await publish_live_update(
+        EVENT_TRANSLATED_TRANSCRIPT_UPDATED,
+        language=translated_transcript.language,
+        transcript_id=str(translated_transcript.transcript_id),
+        translated_transcript_id=str(translated_transcript.id),
+    )
+
+    return translated_transcript
+
+@app.get("/search")
+async def search_transcripts(q: str, db: Session = Depends(get_db)):
+    """
+    Search across all transcript segments for a given query string.
+    """
+    if not q or len(q) < 2:
+        return []
+
+    query_lower = q.lower()
+    results = []
+
+    # Fetch all completed transcripts with their associated videos
+    transcripts = (
+        db.query(Transcript)
+        .join(Video, Transcript.video_id == Video.id)
+        .filter(Transcript.status.in_(["completed", "summarized"]))
+        .all()
+    )
+
+    for transcript in transcripts:
+        if not transcript.segments:
+            continue
+            
+        video_title = transcript.video.filename if transcript.video else "Unknown Video"
+        
+        for idx, segment in enumerate(transcript.segments):
+            text = segment.get("text", "")
+            if query_lower in text.lower():
+                results.append({
+                    "video_id": transcript.video_id,
+                    "video_title": video_title,
+                    "transcript_id": transcript.id,
+                    "segment_id": segment.get("id", idx),
+                    "start_time": segment.get("start_time", 0),
+                    "end_time": segment.get("end_time", 0),
+                    "text": text,
+                    "speaker": segment.get("speaker", "Unknown")
+                })
+                
+                # Limit total results to prevent massive payloads
+                if len(results) >= 50:
+                    break
+        
+        if len(results) >= 50:
+            break
+
+    # Sort results by start_time or video_id as needed
+    return results

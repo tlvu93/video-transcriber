@@ -7,6 +7,11 @@ from typing import Any, Dict, Optional
 
 import requests
 from translation.config import API_URL
+from translation.cache import (
+    compute_translation_cache_key,
+    read_cached_translation,
+    write_cached_translation,
+)
 from translation.translator import detect_language, translate_segments, translate_text
 
 from common.messaging import RabbitMQClient, publish_job_status_changed_event
@@ -20,18 +25,38 @@ logger = logging.getLogger("translation.worker")
 
 # Initialize RabbitMQ client
 rabbitmq_client = RabbitMQClient()
+API_SESSION = requests.Session()
+
+
+def build_translated_content_from_segments(
+    translated_segments: Optional[list], fallback_content: str
+) -> str:
+    """Build a plain-text transcript body from translated segments."""
+    if not translated_segments:
+        return fallback_content
+
+    segment_texts = [
+        str(segment.get("text", "")).strip()
+        for segment in translated_segments
+        if str(segment.get("text", "")).strip()
+    ]
+
+    if not segment_texts:
+        return fallback_content
+
+    return " ".join(segment_texts)
 
 
 def get_job_from_api(job_id: str) -> Dict[str, Any]:
     """Get job details from API."""
-    response = requests.get(f"{API_URL}/translation-jobs/{job_id}")
+    response = API_SESSION.get(f"{API_URL}/translation-jobs/{job_id}")
     response.raise_for_status()
     return response.json()
 
 
 def get_transcript_from_api(transcript_id: str) -> Dict[str, Any]:
     """Get transcript details from API."""
-    response = requests.get(f"{API_URL}/transcripts/{transcript_id}")
+    response = API_SESSION.get(f"{API_URL}/transcripts/{transcript_id}")
     response.raise_for_status()
     return response.json()
 
@@ -47,7 +72,7 @@ def create_translation_api(
         "segments": segments,
         "status": "completed",
     }
-    response = requests.post(f"{API_URL}/translated-transcripts/", json=data)
+    response = API_SESSION.post(f"{API_URL}/translated-transcripts/", json=data)
     response.raise_for_status()
     translation = response.json()
 
@@ -74,6 +99,8 @@ def update_job_status_api(
         if status == "completed":
             url = f"{API_URL}/translation-jobs/{job_id}/complete"
             data = {"status": status, "processing_time_seconds": processing_time}
+            if error_details is not None:
+                data["error_details"] = error_details
         elif status == "failed":
             url = f"{API_URL}/translation-jobs/{job_id}/fail"
             data = {
@@ -84,7 +111,7 @@ def update_job_status_api(
             url = f"{API_URL}/translation-jobs/{job_id}/start"
             data = {}
 
-        response = requests.post(url, json=data)
+        response = API_SESSION.post(url, json=data)
         response.raise_for_status()
 
         response.json()
@@ -118,65 +145,161 @@ def process_translation_job(job_id: str) -> bool:
     retry_count = 0
 
     while retry_count < max_retries:
+        timings: Dict[str, Any] = {}
         try:
             # Get job details from API
+            job_fetch_started_at = time.perf_counter()
             job = get_job_from_api(job_id)
             transcript_id = job["transcript_id"]
             target_language = job["target_language"]
+            timings["job_fetch_seconds"] = round(
+                time.perf_counter() - job_fetch_started_at,
+                3,
+            )
+            timings["target_language"] = target_language
 
             # Mark job as started (only on first attempt)
             if retry_count == 0:
                 update_job_status_api(job_id, "processing")
 
             # Get the transcript from API
+            transcript_fetch_started_at = time.perf_counter()
             transcript = get_transcript_from_api(transcript_id)
             if not transcript:
                 error_details = {"error": f"Transcript not found: {transcript_id}"}
                 update_job_status_api(job_id, "failed", error_details=error_details)
                 return False
+            timings["transcript_fetch_seconds"] = round(
+                time.perf_counter() - transcript_fetch_started_at,
+                3,
+            )
 
             # Get the transcript content and segments
             transcript_content = transcript["content"]
             transcript_segments = transcript.get("segments", [])
+            timings["input_characters"] = len(transcript_content or "")
+            timings["segment_count"] = len(transcript_segments or [])
 
             # Use language from transcript if available, otherwise detect
             source_language = transcript.get("language_code") or job.get("source_language")
             if not source_language:
                 logger.info("No source language specified, attempting to detect...")
+                language_detect_started_at = time.perf_counter()
                 source_language = detect_language(transcript_content)
+                timings["language_detection_seconds"] = round(
+                    time.perf_counter() - language_detect_started_at,
+                    3,
+                )
                 logger.info(f"Detected source language: {source_language}")
             else:
+                timings["language_detection_seconds"] = 0.0
                 logger.info(f"Using source language from transcript: {source_language}")
+            timings["source_language"] = source_language
+
+            cache_lookup_started_at = time.perf_counter()
+            cache_key = compute_translation_cache_key(
+                transcript_content,
+                transcript_segments,
+                source_language,
+                target_language,
+            )
+            cached_translation = read_cached_translation(cache_key)
+            timings["cache_key_prefix"] = cache_key[:12]
+            timings["cache_lookup_seconds"] = round(
+                time.perf_counter() - cache_lookup_started_at,
+                3,
+            )
+            timings["cache_hit"] = cached_translation is not None
 
             # Check if translation is actually needed
-            if source_language == target_language:
-                logger.info(f"Source and target languages are the same ({source_language}), creating copy")
-                translated_content = transcript_content
-                translated_segments = transcript_segments
+            if cached_translation:
+                logger.info(
+                    "Reusing cached translation for transcript %s from %s to %s",
+                    transcript_id,
+                    source_language,
+                    target_language,
+                )
+                translated_content = cached_translation.get("content", transcript_content)
+                translated_segments = cached_translation.get("segments")
+                timings["translation_strategy"] = "cache_hit"
+                timings["translation_seconds"] = 0.0
             else:
-                # Generate translation
-                logger.info(f"Translating transcript {transcript_id} from {source_language} to {target_language}")
+                translation_started_at = time.perf_counter()
+                if source_language == target_language:
+                    logger.info(f"Source and target languages are the same ({source_language}), creating copy")
+                    translated_content = transcript_content
+                    translated_segments = transcript_segments
+                    timings["translation_strategy"] = "copy"
+                else:
+                    logger.info(f"Translating transcript {transcript_id} from {source_language} to {target_language}")
+                    if transcript_segments:
+                        translated_segments = translate_segments(
+                            transcript_segments,
+                            source_language,
+                            target_language,
+                        )
+                        translated_content = build_translated_content_from_segments(
+                            translated_segments,
+                            transcript_content,
+                        )
+                        timings["translation_strategy"] = "segment_batches"
+                    else:
+                        translated_content = translate_text(
+                            transcript_content,
+                            source_language,
+                            target_language,
+                        )
+                        translated_segments = None
+                        timings["translation_strategy"] = "full_content"
 
-                # Translate the full content
-                translated_content = translate_text(transcript_content, source_language, target_language)
+                    if translated_content == transcript_content and source_language != target_language:
+                        logger.warning(
+                            "Translation returned original text, this might indicate a translation failure"
+                        )
+                timings["translation_seconds"] = round(
+                    time.perf_counter() - translation_started_at,
+                    3,
+                )
 
-                # Check if translation actually happened (fallback detection)
-                if translated_content == transcript_content and source_language != target_language:
-                    logger.warning("Translation returned original text, this might indicate a translation failure")
-
-                # Translate segments if they exist
-                translated_segments = None
-                if transcript_segments:
-                    translated_segments = translate_segments(transcript_segments, source_language, target_language)
+                cache_write_started_at = time.perf_counter()
+                write_cached_translation(
+                    cache_key,
+                    content=translated_content,
+                    segments=translated_segments,
+                    source_language=source_language,
+                    target_language=target_language,
+                    strategy=timings["translation_strategy"],
+                )
+                timings["cache_write_seconds"] = round(
+                    time.perf_counter() - cache_write_started_at,
+                    3,
+                )
+            timings["output_characters"] = len(translated_content or "")
 
             # Create translation record via API
+            persist_started_at = time.perf_counter()
             create_translation_api(transcript_id, target_language, translated_content, translated_segments)
+            timings["persist_seconds"] = round(
+                time.perf_counter() - persist_started_at,
+                3,
+            )
 
             # Mark job as completed
             processing_time = time.time() - start_time
-            update_job_status_api(job_id, "completed", processing_time=processing_time)
+            timings["total_processing_seconds"] = round(processing_time, 3)
+            update_job_status_api(
+                job_id,
+                "completed",
+                processing_time=processing_time,
+                error_details={"metrics": timings},
+            )
 
-            logger.info(f"Translation completed for transcript {transcript_id} in {processing_time:.2f} seconds")
+            logger.info(
+                "Translation completed for transcript %s in %.2f seconds with metrics: %s",
+                transcript_id,
+                processing_time,
+                timings,
+            )
             return True
 
         except Exception as e:
@@ -193,9 +316,10 @@ def process_translation_job(job_id: str) -> bool:
 
                 # Mark job as failed
                 error_details = {
-                    "error": str(e), 
+                    "error": str(e),
                     "traceback": traceback.format_exc()[:1000],
-                    "retry_count": retry_count
+                    "retry_count": retry_count,
+                    "metrics": timings,
                 }
                 update_job_status_api(job_id, "failed", error_details=error_details)
                 return False
@@ -206,7 +330,7 @@ def process_translation_job(job_id: str) -> bool:
 def get_next_translation_job_api() -> Optional[Dict[str, Any]]:
     """Get the next pending translation job from the API."""
     try:
-        response = requests.get(f"{API_URL}/translation-jobs/next")
+        response = API_SESSION.get(f"{API_URL}/translation-jobs/next")
         if response.status_code == 404:
             # No pending jobs
             return None

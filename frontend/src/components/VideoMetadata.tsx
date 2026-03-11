@@ -1,17 +1,29 @@
 import { useState } from "react";
+import type { Video } from "../types/domain";
+import { getStatusColor } from "../utils/status";
 
-const VideoMetadata = ({ video, onRetryTranscription }) => {
+interface VideoMetadataProps {
+  onRetryTranscription?: (() => Promise<unknown>) | null;
+  video: Video | null;
+}
+
+export default function VideoMetadata({
+  video,
+  onRetryTranscription,
+}: VideoMetadataProps) {
   const [retrying, setRetrying] = useState(false);
-  if (!video) return <div>Loading metadata...</div>;
+  if (!video) {
+    return <div>Loading metadata...</div>;
+  }
 
-  // Format the date
   const formattedDate = video.created_at
     ? new Date(video.created_at).toLocaleString()
     : "Unknown date";
 
-  // Format duration if available in metadata
-  const formatDuration = (seconds) => {
-    if (!seconds) return "Unknown";
+  function formatDuration(seconds?: number): string {
+    if (!seconds) {
+      return "Unknown";
+    }
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const remainingSeconds = Math.floor(seconds % 60);
@@ -22,16 +34,16 @@ const VideoMetadata = ({ video, onRetryTranscription }) => {
         .padStart(2, "0")}`;
     }
     return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
-  };
+  }
 
-  // Get duration from metadata if available
   const duration = video.video_metadata?.duration
     ? formatDuration(video.video_metadata.duration)
     : "Unknown";
 
-  // Handle retry button click
-  const handleRetry = async () => {
-    if (!onRetryTranscription || retrying) return;
+  async function handleRetry(): Promise<void> {
+    if (!onRetryTranscription || retrying) {
+      return;
+    }
 
     try {
       setRetrying(true);
@@ -41,24 +53,25 @@ const VideoMetadata = ({ video, onRetryTranscription }) => {
     } finally {
       setRetrying(false);
     }
-  };
+  }
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-4 mb-4">
-      <div className="flex justify-between items-start">
-        <h2 className="text-xl font-bold mb-2 text-gray-800 dark:text-white">
+    <div className="mb-4 rounded-lg bg-white p-4 shadow-md dark:bg-gray-800">
+      <div className="flex items-start justify-between">
+        <h2 className="mb-2 font-bold text-gray-800 text-xl dark:text-white">
           {video.filename}
         </h2>
 
         {onRetryTranscription && (
           <button
-            onClick={handleRetry}
+            className="rounded bg-blue-500 px-3 py-1 font-semibold text-sm text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={retrying}
-            className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-semibold py-1 px-3 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handleRetry}
+            type="button"
           >
             {retrying ? (
               <>
-                <span className="inline-block animate-spin mr-1">⟳</span>
+                <span className="mr-1 inline-block animate-spin">⟳</span>
                 Retrying...
               </>
             ) : (
@@ -68,7 +81,7 @@ const VideoMetadata = ({ video, onRetryTranscription }) => {
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-2 text-sm text-gray-600 dark:text-gray-300">
+      <div className="grid grid-cols-2 gap-2 text-gray-600 text-sm dark:text-gray-300">
         <div>
           <span className="font-semibold">Upload Date:</span> {formattedDate}
         </div>
@@ -88,23 +101,4 @@ const VideoMetadata = ({ video, onRetryTranscription }) => {
       </div>
     </div>
   );
-};
-
-// Helper function to get color based on status
-const getStatusColor = (status) => {
-  switch (status?.toLowerCase()) {
-    case "completed":
-    case "transcribed":
-      return "text-green-600 dark:text-green-400";
-    case "pending":
-    case "processing":
-      return "text-yellow-600 dark:text-yellow-400";
-    case "error":
-    case "failed":
-      return "text-red-600 dark:text-red-400";
-    default:
-      return "text-gray-600 dark:text-gray-400";
-  }
-};
-
-export default VideoMetadata;
+}
