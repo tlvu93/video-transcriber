@@ -40,16 +40,14 @@ export default function SummarizationJobStatus({
 
   function renderStatusContent() {
     if (jobsQuery.isPending && !activeJob) {
-      return (
-        <div className="animate-pulse">
-          <div className="mb-2 h-4 w-3/4 rounded bg-gray-200 dark:bg-gray-700" />
-        </div>
-      );
+      return <div className="h-4 w-3/4 animate-pulse rounded bg-white/10" />;
     }
 
     if (jobsQuery.isError) {
       return (
-        <div className="text-red-500 text-sm">Failed to load job status.</div>
+        <div className="rounded-2xl border border-destructive/20 bg-destructive/10 p-4 text-destructive text-sm">
+          Failed to load summarization status.
+        </div>
       );
     }
 
@@ -58,11 +56,11 @@ export default function SummarizationJobStatus({
     }
 
     return (
-      <div className="mb-2">
+      <div className="space-y-4">
         {activeJob.status === "failed" && (
-          <div className="mb-3 rounded border-red-500 border-l-4 bg-red-100 p-3 text-red-700 dark:bg-red-900/30 dark:text-red-400">
-            <p className="font-semibold">Summarization Failed</p>
-            <p className="mt-1 text-sm">
+          <div className="rounded-2xl border border-destructive/20 bg-destructive/10 p-4 text-destructive">
+            <p className="font-semibold">Summary generation failed</p>
+            <p className="mt-2 text-sm">
               {getErrorMessage(activeJob.error_details)}
             </p>
           </div>
@@ -70,17 +68,20 @@ export default function SummarizationJobStatus({
 
         {(activeJob.status === "pending" ||
           activeJob.status === "processing") && (
-          <div className="mb-3 flex items-center rounded border-purple-500 border-l-4 bg-purple-50 p-3 text-purple-700 dark:bg-purple-900/20 dark:text-purple-400">
-            <div className="mr-3 h-5 w-5 animate-spin rounded-full border-purple-500 border-t-2 border-b-2" />
-            <div>
-              <p className="font-semibold">
-                {activeJob.status === "pending"
-                  ? "Waiting for Summarizer..."
-                  : "Generating Summary with Ollama..."}
-              </p>
-              <p className="mt-1 text-sm opacity-80">
-                Using local AI model to read the transcript.
-              </p>
+          <div className="rounded-2xl border border-primary/20 bg-primary/10 p-4 text-amber-100">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 h-5 w-5 animate-spin rounded-full border-2 border-amber-100/30 border-t-amber-100" />
+              <div>
+                <p className="font-semibold">
+                  {activeJob.status === "pending"
+                    ? "Queued for summary"
+                    : "Generating summary"}
+                </p>
+                <p className="mt-2 text-amber-100/80 text-sm">
+                  The summarizer is reading the transcript and preparing the key
+                  takeaways.
+                </p>
+              </div>
             </div>
           </div>
         )}
@@ -89,11 +90,14 @@ export default function SummarizationJobStatus({
   }
 
   return (
-    <div className="mb-4 rounded-lg bg-white p-4 shadow-md dark:bg-gray-800">
-      <h2 className="mb-2 font-semibold text-gray-800 text-xl dark:text-white">
-        Summarization Status
+    <section className="panel p-5">
+      <p className="font-semibold text-primary/80 text-xs uppercase tracking-[0.24em]">
+        Pipeline
+      </p>
+      <h2 className="mt-2 font-semibold text-foreground text-xl">
+        Summary status
       </h2>
-      {renderStatusContent()}
-    </div>
+      <div className="mt-4">{renderStatusContent()}</div>
+    </section>
   );
 }

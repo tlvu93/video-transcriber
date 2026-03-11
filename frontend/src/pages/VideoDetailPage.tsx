@@ -1,24 +1,29 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   createTranscriptionJob,
   fetchTranscriptsByVideoId,
   fetchVideoById,
   updateVideo,
 } from "../api/videoService";
-import SummarizationJobStatus from "../components/SummarizationJobStatus";
-import TranscriptionJobStatus from "../components/TranscriptionJobStatus";
+import ProcessingTimeline from "../components/ProcessingTimeline";
 import TranscriptList from "../components/TranscriptList";
 import VideoMetadata from "../components/VideoMetadata";
 import VideoPlayer from "../components/VideoPlayer";
 import VideoSummary from "../components/VideoSummary";
+import {
+  FeedbackPanel,
+  VideoWorkspaceSkeleton,
+} from "../components/WorkspaceStates";
 import { useVideoDetailLiveUpdates } from "../hooks/useLiveUpdates";
 import type {
   Transcript,
   TranscriptSegment as TranscriptSegmentType,
   TranslatedTranscript,
 } from "../types/domain";
+import { formatRelativeDate } from "../utils/formatters";
+import { getVideoStatusMeta } from "../utils/status";
 import { normalizeTranscript } from "../utils/transcript";
 
 function findActiveSegment(
@@ -141,19 +146,18 @@ export default function VideoDetailPage() {
   }
 
   if (videoQuery.isPending || transcriptQuery.isPending) {
-    return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="h-12 w-12 animate-spin rounded-full border-blue-500 border-t-2 border-b-2" />
-      </div>
-    );
+    return <VideoWorkspaceSkeleton />;
   }
 
   if (videoQuery.isError || transcriptQuery.isError) {
     return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="rounded border-red-500 border-l-4 bg-red-100 p-4 text-red-700">
-          <p>Failed to load video data. Please try again later.</p>
-        </div>
+      <div className="mx-auto max-w-4xl px-4 py-12 sm:px-6 lg:px-8">
+        <FeedbackPanel
+          description="The player or transcript data could not be loaded. Please try again."
+          eyebrow="Error"
+          title="Failed to load this video workspace"
+          tone="error"
+        />
       </div>
     );
   }
@@ -164,11 +168,49 @@ export default function VideoDetailPage() {
     displayedTranscript?.segments,
     currentTime
   );
+  const statusMeta = getVideoStatusMeta(video?.status);
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
+    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <Link
+            className="inline-flex items-center gap-2 text-muted-foreground text-sm transition hover:text-foreground"
+            to="/"
+          >
+            <svg
+              aria-hidden="true"
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              viewBox="0 0 24 24"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M10.25 19.25 3.75 12l6.5-7.25M4.5 12h15.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            Back to library
+          </Link>
+          <h1 className="mt-4 font-semibold text-3xl text-foreground tracking-tight sm:text-4xl">
+            {video?.filename}
+          </h1>
+          <p className="mt-2 text-muted-foreground">
+            Added {formatRelativeDate(video?.created_at)}
+          </p>
+        </div>
+
+        <span className={`status-chip ${statusMeta.badgeClassName}`}>
+          <span className="h-2 w-2 rounded-full bg-current" />
+          {statusMeta.label}
+        </span>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(22rem,0.9fr)]">
+        <div className="space-y-6">
           <VideoPlayer
             currentTime={seekTime}
             onTimeUpdate={handleTimeUpdate}
@@ -177,29 +219,49 @@ export default function VideoDetailPage() {
             }
             videoUrl={getVideoUrl()}
           />
-          <div className="mt-4">
-            <VideoMetadata
-              onRetryTranscription={() => retryMutation.mutateAsync()}
-              video={video}
-            />
-            <TranscriptionJobStatus
-              onJobRetried={refreshTranscriptData}
-              videoId={id}
-            />
-            {transcript && (
-              <SummarizationJobStatus transcriptId={transcript.id} />
-            )}
-            {transcript && <VideoSummary transcriptId={transcript.id} />}
-          </div>
+
+          {transcript ? (
+            <VideoSummary transcriptId={transcript.id} />
+          ) : (
+            <section className="panel p-5">
+              <p className="font-semibold text-primary/80 text-xs uppercase tracking-[0.24em]">
+                Summary
+              </p>
+              <h2 className="mt-2 font-semibold text-foreground text-xl">
+                AI summary
+              </h2>
+              <p className="mt-3 text-muted-foreground">
+                A summary will appear here after the transcript has been
+                processed.
+              </p>
+            </section>
+          )}
         </div>
-        <div>
-          <TranscriptList
-            currentTime={currentTime}
-            onDisplayedTranscriptChange={setDisplayedTranscript}
-            onSegmentClick={handleSegmentClick}
-            onTranscriptUpdated={refreshTranscriptData}
+
+        <div className="flex flex-col gap-6 xl:sticky xl:top-28 xl:h-[calc(100vh-8rem)]">
+          <VideoMetadata
+            onRetryTranscription={() => retryMutation.mutateAsync()}
             transcript={transcript}
+            video={video}
           />
+
+          <ProcessingTimeline
+            transcriptAvailable={Boolean(transcript)}
+            transcriptId={transcript?.id ?? null}
+            transcriptSegmentCount={transcript?.segments?.length ?? 0}
+            videoId={id}
+            videoStatus={video?.status}
+          />
+
+          <div className="min-h-[26rem] flex-1 overflow-hidden">
+            <TranscriptList
+              currentTime={currentTime}
+              onDisplayedTranscriptChange={setDisplayedTranscript}
+              onSegmentClick={handleSegmentClick}
+              onTranscriptUpdated={refreshTranscriptData}
+              transcript={transcript}
+            />
+          </div>
         </div>
       </div>
     </div>

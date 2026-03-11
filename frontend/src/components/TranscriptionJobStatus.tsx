@@ -59,17 +59,17 @@ export default function TranscriptionJobStatus({
   function renderStatusContent() {
     if (jobsQuery.isPending && !activeJob) {
       return (
-        <div className="animate-pulse">
-          <div className="mb-2 h-4 w-3/4 rounded bg-gray-200 dark:bg-gray-700" />
-          <div className="mb-2 h-4 w-full rounded bg-gray-200 dark:bg-gray-700" />
+        <div className="animate-pulse space-y-3">
+          <div className="h-4 w-3/4 rounded bg-white/10" />
+          <div className="h-4 w-full rounded bg-white/10" />
         </div>
       );
     }
 
     if (jobsQuery.isError) {
       return (
-        <div className="rounded border-red-500 border-l-4 bg-red-100 p-2 text-red-700 dark:bg-red-900/30 dark:text-red-400">
-          <p>Failed to load job status. Please try again later.</p>
+        <div className="rounded-2xl border border-destructive/20 bg-destructive/10 p-4 text-destructive text-sm">
+          Failed to load transcription status. Please try again later.
         </div>
       );
     }
@@ -79,11 +79,11 @@ export default function TranscriptionJobStatus({
     }
 
     return (
-      <div className="mb-2">
+      <div className="space-y-4">
         {activeJob.status === "failed" && (
-          <div className="mb-3 rounded border-red-500 border-l-4 bg-red-100 p-3 text-red-700 dark:bg-red-900/30 dark:text-red-400">
-            <p className="font-semibold">Transcription Failed</p>
-            <p className="mt-1 text-sm">
+          <div className="rounded-2xl border border-destructive/20 bg-destructive/10 p-4 text-destructive">
+            <p className="font-semibold">Transcription failed</p>
+            <p className="mt-2 text-sm">
               {getErrorMessage(activeJob.error_details)}
             </p>
           </div>
@@ -91,36 +91,32 @@ export default function TranscriptionJobStatus({
 
         {(activeJob.status === "pending" ||
           activeJob.status === "processing") && (
-          <div className="mb-3 flex items-center rounded border-blue-500 border-l-4 bg-blue-50 p-3 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400">
-            <div className="mr-3 h-5 w-5 animate-spin rounded-full border-blue-500 border-t-2 border-b-2" />
-            <div>
-              <p className="font-semibold">
-                {activeJob.status === "pending"
-                  ? "Waiting to start..."
-                  : "Transcribing Video..."}
-              </p>
-              <p className="mt-1 text-sm opacity-80">
-                This may take a while depending on the video length.
-              </p>
+          <div className="rounded-2xl border border-sky-400/20 bg-sky-400/10 p-4 text-sky-100">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 h-5 w-5 animate-spin rounded-full border-2 border-sky-200/30 border-t-sky-100" />
+              <div>
+                <p className="font-semibold">
+                  {activeJob.status === "pending"
+                    ? "Queued for transcription"
+                    : "Transcribing video"}
+                </p>
+                <p className="mt-2 text-sky-100/80 text-sm">
+                  This can take a while for longer footage, but the page will
+                  keep updating automatically.
+                </p>
+              </div>
             </div>
           </div>
         )}
 
         {activeJob.status === "failed" && (
           <button
-            className="rounded bg-blue-500 px-4 py-2 font-semibold text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-full border border-primary/25 bg-primary/10 px-4 py-2 font-medium text-primary text-sm transition hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
             disabled={retryMutation.isPending}
             onClick={() => retryMutation.mutate(activeJob.id)}
             type="button"
           >
-            {retryMutation.isPending ? (
-              <>
-                <span className="mr-2 inline-block animate-spin">⟳</span>
-                Retrying...
-              </>
-            ) : (
-              "Retry Transcription"
-            )}
+            {retryMutation.isPending ? "Retrying..." : "Retry transcription"}
           </button>
         )}
       </div>
@@ -128,11 +124,14 @@ export default function TranscriptionJobStatus({
   }
 
   return (
-    <div className="mb-4 rounded-lg bg-white p-4 shadow-md dark:bg-gray-800">
-      <h2 className="mb-2 font-semibold text-gray-800 text-xl dark:text-white">
-        Transcription Status
+    <section className="panel p-5">
+      <p className="font-semibold text-primary/80 text-xs uppercase tracking-[0.24em]">
+        Pipeline
+      </p>
+      <h2 className="mt-2 font-semibold text-foreground text-xl">
+        Transcription status
       </h2>
-      {renderStatusContent()}
-    </div>
+      <div className="mt-4">{renderStatusContent()}</div>
+    </section>
   );
 }

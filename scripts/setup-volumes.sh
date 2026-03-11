@@ -4,6 +4,9 @@
 
 set -e
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -138,5 +141,5 @@ for container_path in "${DIRS[@]}"; do
 done
 
 echo ""
-echo -e "${GREEN}You can now run: docker-compose up${NC}"
+echo -e "${GREEN}You can now run: docker compose up${NC}"
 echo -e "${YELLOW}Note: Make sure the host directories exist and contain your video files${NC}"

@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import subprocess
+from fractions import Fraction
 from typing import Any, Dict
 
 from transcription.config import VIDEO_DIRS
@@ -9,6 +10,18 @@ from transcription.config import VIDEO_DIRS
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("utils")
+
+
+def parse_frame_rate(frame_rate: str) -> float:
+    """Parse ffprobe frame-rate strings without using eval."""
+    if not frame_rate:
+        return 0.0
+
+    try:
+        return float(Fraction(frame_rate))
+    except (ValueError, ZeroDivisionError):
+        logger.warning("Could not parse frame rate '%s'", frame_rate)
+        return 0.0
 
 
 def get_video_metadata(filepath: str) -> Dict[str, Any]:
@@ -57,7 +70,7 @@ def get_video_metadata(filepath: str) -> Dict[str, Any]:
                     "width": video_stream.get("width", 0),
                     "height": video_stream.get("height", 0),
                     "codec": video_stream.get("codec_name", "unknown"),
-                    "fps": eval(video_stream.get("r_frame_rate", "0/1")),
+                    "fps": parse_frame_rate(video_stream.get("r_frame_rate", "0/1")),
                 }
             )
 

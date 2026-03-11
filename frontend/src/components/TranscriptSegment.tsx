@@ -63,14 +63,14 @@ export default function TranscriptSegment({
     }
 
     const colors = [
-      "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-      "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-      "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-      "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
-      "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
-      "bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-200",
-      "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200",
-      "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
+      "border-red-400/20 bg-red-400/10 text-red-200",
+      "border-sky-400/20 bg-sky-400/10 text-sky-200",
+      "border-emerald-400/20 bg-emerald-400/10 text-emerald-200",
+      "border-amber-400/20 bg-amber-400/10 text-amber-200",
+      "border-fuchsia-400/20 bg-fuchsia-400/10 text-fuchsia-200",
+      "border-cyan-400/20 bg-cyan-400/10 text-cyan-200",
+      "border-violet-400/20 bg-violet-400/10 text-violet-200",
+      "border-orange-400/20 bg-orange-400/10 text-orange-200",
     ];
 
     const speakerNum = Number.parseInt(speaker.replace(/\D/g, ""), 10) || 0;
@@ -126,11 +126,11 @@ export default function TranscriptSegment({
 
   return (
     <div
-      className={`mb-1 rounded-md p-2 transition-colors ${
+      className={`rounded-[1.25rem] border p-3 transition ${
         isActive
-          ? "border-blue-500 border-l-4 bg-blue-100 dark:bg-blue-900"
-          : "hover:bg-gray-100 dark:hover:bg-gray-700"
-      } ${!isEditing && "cursor-pointer"}`}
+          ? "border-primary/35 bg-primary/10 shadow-glow"
+          : "border-white/8 bg-white/[0.03] hover:border-white/12 hover:bg-white/[0.06]"
+      } ${isEditing ? "" : "cursor-pointer"}`}
       onClick={() => {
         if (!isEditing) {
           onClick(safeSegment.start_time);
@@ -145,10 +145,10 @@ export default function TranscriptSegment({
       role="button"
       tabIndex={0}
     >
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-3">
         {showTimestamps && (
-          <span className="mt-1 flex-shrink-0 cursor-pointer font-mono text-gray-500 text-xs dark:text-gray-400">
-            [{formatTime(safeSegment.start_time)}]
+          <span className="mt-0.5 flex-shrink-0 rounded-full border border-white/10 bg-white/5 px-2 py-1 font-mono text-[10px] text-muted-foreground uppercase tracking-[0.16em]">
+            {formatTime(safeSegment.start_time)}
           </span>
         )}
         {showSpeaker &&
@@ -156,7 +156,7 @@ export default function TranscriptSegment({
           (isEditingSpeaker ? (
             <input
               autoFocus
-              className="mt-1 w-28 rounded-full border border-blue-500 bg-white px-2 py-1 font-medium text-gray-900 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-gray-100"
+              className="mt-0.5 w-28 rounded-full border border-primary/35 bg-background px-3 py-1 font-medium text-foreground text-xs focus:outline-none focus:ring-2 focus:ring-primary/30"
               onBlur={handleSpeakerRename}
               onChange={(event) => setSpeakerNameDraft(event.target.value)}
               onClick={(event) => event.stopPropagation()}
@@ -165,7 +165,7 @@ export default function TranscriptSegment({
             />
           ) : (
             <button
-              className={`mt-1 flex-shrink-0 rounded-full px-2 py-1 font-medium text-xs transition hover:opacity-90 ${getSpeakerColor(
+              className={`mt-0.5 flex-shrink-0 rounded-full border px-2.5 py-1 font-medium text-xs transition hover:opacity-90 ${getSpeakerColor(
                 safeSegment.speaker
               )}`}
               onClick={(event) => {
@@ -181,8 +181,8 @@ export default function TranscriptSegment({
           ))}
         {isEditing ? (
           <textarea
-            autoFocus // Needed for inline editing UX to be smooth
-            className="min-h-[40px] w-full flex-1 resize-y rounded border border-blue-500 bg-white p-1 text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-gray-100"
+            autoFocus
+            className="min-h-[40px] w-full flex-1 resize-y rounded-2xl border border-primary/35 bg-background p-3 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
             onBlur={handleBlur}
             onChange={(event) => setEditText(event.target.value)}
             onClick={(event) => event.stopPropagation()}
@@ -192,7 +192,11 @@ export default function TranscriptSegment({
             value={editText}
           />
         ) : (
-          <span className="flex-1 text-gray-800 leading-relaxed dark:text-gray-200">
+          <span
+            className={`flex-1 leading-relaxed ${
+              isActive ? "text-foreground" : "text-slate-200"
+            }`}
+          >
             {safeSegment.text}
           </span>
         )}

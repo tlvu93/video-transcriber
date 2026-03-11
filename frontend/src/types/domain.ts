@@ -20,6 +20,7 @@ export interface Video {
   filename: string;
   id: string;
   status: VideoStatus | string;
+  storage_path?: string | null;
   video_metadata?: VideoMetadata | null;
 }
 
@@ -83,9 +84,11 @@ export interface BaseJob {
   created_at: string;
   error_details?: JobErrorDetails | null;
   id: string;
+  lease_expires_at?: string | null;
   processing_time_seconds?: number | null;
   started_at?: string | null;
   status: JobStatus;
+  worker_id?: string | null;
 }
 
 export interface TranscriptionJob extends BaseJob {

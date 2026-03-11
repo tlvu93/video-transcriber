@@ -3,17 +3,21 @@ import os
 import re
 import shutil
 import stat
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from api.config import VIDEO_DIR, VIDEO_DIRS
 from api.database import get_db
 from api.job_queue import (
+    JobLeaseOwnershipError,
+    claim_job,
     create_summarization_job,
     create_transcription_job,
     create_translation_job,
     get_next_summarization_job,
     get_next_transcription_job,
     get_next_translation_job,
+    heartbeat_job,
     mark_job_completed,
     mark_job_failed,
     mark_job_started,
@@ -23,14 +27,16 @@ from api.models import (
     SummarizationJob,
     Summary,
     Transcript,
+    TranscriptSegmentSearch,
     TranscriptionJob,
     TranslatedTranscript,
     TranslationJob,
     Video,
 )
+from api.search_index import search_transcript_segments, sync_transcript_search_rows
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from common.messaging import (
@@ -81,6 +87,8 @@ async def publish_job_live_update(
     *,
     video_id: Optional[str] = None,
     transcript_id: Optional[str] = None,
+    worker_id: Optional[str] = None,
+    lease_expires_at: Optional[datetime] = None,
 ) -> None:
     await publish_live_update(
         EVENT_JOB_STATUS_CHANGED,
@@ -89,7 +97,68 @@ async def publish_job_live_update(
         status=status,
         transcript_id=transcript_id,
         video_id=video_id,
+        worker_id=worker_id,
+        lease_expires_at=lease_expires_at.isoformat() if lease_expires_at else None,
     )
+
+
+def build_video_response(video: Video) -> Dict[str, Any]:
+    return {
+        "id": str(video.id),
+        "filename": video.filename,
+        "status": video.status,
+        "created_at": video.created_at,
+        "file_hash": video.file_hash,
+        "video_metadata": video.video_metadata,
+        "storage_path": video.storage_path,
+    }
+
+
+def resolve_video_storage_path(
+    filename: str,
+    *,
+    storage_path: Optional[str] = None,
+    allow_recursive_fallback: bool = True,
+) -> str:
+    candidate_paths = []
+    if storage_path:
+        candidate_paths.append(storage_path)
+
+    candidate_paths.append(os.path.join(VIDEO_DIR, filename))
+    for video_dir in VIDEO_DIRS:
+        candidate_paths.append(os.path.join(video_dir, filename))
+
+    for candidate in candidate_paths:
+        if candidate and os.path.exists(candidate):
+            return os.path.abspath(candidate)
+
+    if not allow_recursive_fallback:
+        raise FileNotFoundError(f"Video file not found: {filename}")
+
+    for video_dir in VIDEO_DIRS:
+        for root, _, files in os.walk(video_dir):
+            if filename in files:
+                return os.path.abspath(os.path.join(root, filename))
+
+    raise FileNotFoundError(f"Video file not found: {filename}")
+
+
+def get_video_storage_path(video: Video, db: Session) -> str:
+    try:
+        resolved_path = resolve_video_storage_path(
+            video.filename,
+            storage_path=video.storage_path,
+            allow_recursive_fallback=video.storage_path is None,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    if video.storage_path != resolved_path:
+        video.storage_path = resolved_path
+        db.commit()
+        db.refresh(video)
+
+    return resolved_path
 
 
 @app.get("/events/stream")
@@ -117,6 +186,7 @@ class VideoCreate(BaseModel):
     filename: str
     file_hash: Optional[str] = None
     video_metadata: Optional[Dict[str, Any]] = None
+    storage_path: Optional[str] = None
 
 
 class VideoCheck(BaseModel):
@@ -125,12 +195,15 @@ class VideoCheck(BaseModel):
 
 
 class VideoResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     filename: str
     status: str
     created_at: Any
     file_hash: Optional[str] = None
     video_metadata: Optional[Dict[str, Any]] = None
+    storage_path: Optional[str] = None
 
 
 class YoutubeDownloadRequest(BaseModel):
@@ -142,6 +215,8 @@ class TranscriptionJobCreate(BaseModel):
 
 
 class TranscriptionJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     video_id: str
     status: str
@@ -150,9 +225,15 @@ class TranscriptionJobResponse(BaseModel):
     completed_at: Optional[Any] = None
     processing_time_seconds: Optional[float] = None
     error_details: Optional[Dict[str, Any]] = None
+    worker_id: Optional[str] = None
+    lease_expires_at: Optional[Any] = None
 
 
-class TranscriptionJobUpdate(BaseModel):
+class LeaseWorkerRequest(BaseModel):
+    worker_id: str
+
+
+class TranscriptionJobUpdate(LeaseWorkerRequest):
     status: Optional[str] = None
     processing_time_seconds: Optional[float] = None
     error_details: Optional[Dict[str, Any]] = None
@@ -163,6 +244,8 @@ class SummarizationJobCreate(BaseModel):
 
 
 class SummarizationJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     transcript_id: str
     status: str
@@ -171,9 +254,11 @@ class SummarizationJobResponse(BaseModel):
     completed_at: Optional[Any] = None
     processing_time_seconds: Optional[float] = None
     error_details: Optional[Dict[str, Any]] = None
+    worker_id: Optional[str] = None
+    lease_expires_at: Optional[Any] = None
 
 
-class SummarizationJobUpdate(BaseModel):
+class SummarizationJobUpdate(LeaseWorkerRequest):
     status: Optional[str] = None
     processing_time_seconds: Optional[float] = None
     error_details: Optional[Dict[str, Any]] = None
@@ -186,6 +271,8 @@ class SummaryCreate(BaseModel):
 
 
 class SummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     transcript_id: str
     content: str
@@ -200,6 +287,8 @@ class TranslationJobCreate(BaseModel):
 
 
 class TranslationJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     transcript_id: str
     source_language: Optional[str]
@@ -210,9 +299,11 @@ class TranslationJobResponse(BaseModel):
     completed_at: Optional[Any] = None
     processing_time_seconds: Optional[float] = None
     error_details: Optional[Dict[str, Any]] = None
+    worker_id: Optional[str] = None
+    lease_expires_at: Optional[Any] = None
 
 
-class TranslationJobUpdate(BaseModel):
+class TranslationJobUpdate(LeaseWorkerRequest):
     status: Optional[str] = None
     processing_time_seconds: Optional[float] = None
     error_details: Optional[Dict[str, Any]] = None
@@ -227,6 +318,8 @@ class TranslatedTranscriptCreate(BaseModel):
 
 
 class TranslatedTranscriptResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     transcript_id: str
     language: str
@@ -252,6 +345,8 @@ class TranscriptCreate(BaseModel):
 
 
 class TranscriptResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     video_id: str
     source_type: str
@@ -303,7 +398,7 @@ async def upload_video(
         raise HTTPException(status_code=500, detail=f"Error saving video file: {str(e)}")
 
     # Create video record
-    video = Video(filename=file.filename)
+    video = Video(filename=file.filename, storage_path=os.path.abspath(file_path))
     db.add(video)
     db.commit()
     db.refresh(video)
@@ -332,12 +427,7 @@ async def upload_video(
         video_id=str(video.id),
     )
 
-    return {
-        "id": video.id,
-        "filename": video.filename,
-        "status": video.status,
-        "created_at": video.created_at,
-    }
+    return build_video_response(video)
 
 
 @app.post("/videos/youtube", response_model=VideoResponse)
@@ -373,7 +463,7 @@ async def download_youtube_video(
             logger.info(f"Successfully downloaded YouTube video to: {filename}")
 
             # Create video record
-            video = Video(filename=basename)
+            video = Video(filename=basename, storage_path=os.path.abspath(filename))
             db.add(video)
             db.commit()
             db.refresh(video)
@@ -402,12 +492,7 @@ async def download_youtube_video(
                 video_id=str(video.id),
             )
 
-            return {
-                "id": str(video.id),
-                "filename": video.filename,
-                "status": video.status,
-                "created_at": video.created_at,
-            }
+            return build_video_response(video)
     except Exception as e:
         logger.error(f"Error downloading YouTube video: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error downloading YouTube video: {str(e)}")
@@ -430,36 +515,14 @@ async def register_video(video_data: VideoCreate, db: Session = Depends(get_db))
 
     # Check if the video file exists
     filename = video_data.filename
-    file_path = os.path.join(VIDEO_DIR, filename)
-
-    # If file doesn't exist at the expected path, search in all video directories and their subdirectories
-    if not os.path.exists(file_path):
-        logger.info(f"Video file not found at {file_path}, searching in all video directories...")
-        found = False
-
-        # Search in all configured video directories
-        for video_dir in VIDEO_DIRS:
-            # First check directly in the video directory
-            test_path = os.path.join(video_dir, filename)
-            if os.path.exists(test_path):
-                file_path = test_path
-                logger.info(f"Found video file at: {file_path}")
-                found = True
-                break
-
-            # Then search in subdirectories
-            for root, _, files in os.walk(video_dir):
-                if filename in files:
-                    file_path = os.path.join(root, filename)
-                    logger.info(f"Found video file at: {file_path}")
-                    found = True
-                    break
-
-            if found:
-                break
-
-        if not found:
-            raise HTTPException(status_code=404, detail=f"Video file not found: {filename}")
+    try:
+        file_path = resolve_video_storage_path(
+            filename,
+            storage_path=video_data.storage_path,
+            allow_recursive_fallback=video_data.storage_path is None,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
     # Check if a video with the same filename exists
     existing_video = db.query(Video).filter(Video.filename == video_data.filename).first()
@@ -467,6 +530,7 @@ async def register_video(video_data: VideoCreate, db: Session = Depends(get_db))
     if existing_video:
         logger.info(f"Video {video_data.filename} already exists in the database, updating status")
         existing_video.status = "pending"
+        existing_video.storage_path = file_path
         db.commit()
         db.refresh(existing_video)
         await publish_live_update(
@@ -475,14 +539,7 @@ async def register_video(video_data: VideoCreate, db: Session = Depends(get_db))
             status=existing_video.status,
             video_id=str(existing_video.id),
         )
-        return {
-            "id": str(existing_video.id),
-            "filename": existing_video.filename,
-            "status": existing_video.status,
-            "created_at": existing_video.created_at,
-            "file_hash": existing_video.file_hash,
-            "video_metadata": existing_video.video_metadata,
-        }
+        return build_video_response(existing_video)
 
     # Check if a video with the same file_hash exists
     if video_data.file_hash:
@@ -493,19 +550,16 @@ async def register_video(video_data: VideoCreate, db: Session = Depends(get_db))
                 f"Video with hash {video_data.file_hash} already exists in the database as "
                 f"{existing_video_by_hash.filename}"
             )
-            return {
-                "id": str(existing_video_by_hash.id),
-                "filename": existing_video_by_hash.filename,
-                "status": existing_video_by_hash.status,
-                "created_at": existing_video_by_hash.created_at,
-                "file_hash": existing_video_by_hash.file_hash,
-                "video_metadata": existing_video_by_hash.video_metadata,
-            }
+            existing_video_by_hash.storage_path = file_path
+            db.commit()
+            db.refresh(existing_video_by_hash)
+            return build_video_response(existing_video_by_hash)
 
     # Create a new video record
     video = Video(
         filename=video_data.filename,
         file_hash=video_data.file_hash,
+        storage_path=file_path,
         status="pending",
         video_metadata=video_data.video_metadata or {"file_hash": video_data.file_hash},
     )
@@ -522,14 +576,7 @@ async def register_video(video_data: VideoCreate, db: Session = Depends(get_db))
         video_id=str(video.id),
     )
 
-    return {
-        "id": str(video.id),
-        "filename": video.filename,
-        "status": video.status,
-        "created_at": video.created_at,
-        "file_hash": video.file_hash,
-        "video_metadata": video.video_metadata,
-    }
+    return build_video_response(video)
 
 
 @app.post("/videos/check", response_model=Optional[VideoResponse])
@@ -552,14 +599,7 @@ async def check_video_exists(video_check: VideoCheck, db: Session = Depends(get_
 
     if existing_video:
         logger.info(f"Video {video_check.filename} found in the database")
-        return {
-            "id": str(existing_video.id),
-            "filename": existing_video.filename,
-            "status": existing_video.status,
-            "created_at": existing_video.created_at,
-            "file_hash": existing_video.file_hash,
-            "video_metadata": existing_video.video_metadata,
-        }
+        return build_video_response(existing_video)
 
     # Check if a video with the same file_hash exists
     if video_check.file_hash:
@@ -569,14 +609,7 @@ async def check_video_exists(video_check: VideoCheck, db: Session = Depends(get_
             logger.info(
                 f"Video with hash {video_check.file_hash} found in the database as {existing_video_by_hash.filename}"
             )
-            return {
-                "id": str(existing_video_by_hash.id),
-                "filename": existing_video_by_hash.filename,
-                "status": existing_video_by_hash.status,
-                "created_at": existing_video_by_hash.created_at,
-                "file_hash": existing_video_by_hash.file_hash,
-                "video_metadata": existing_video_by_hash.video_metadata,
-            }
+            return build_video_response(existing_video_by_hash)
 
     logger.info(f"Video {video_check.filename} not found in the database")
     return None
@@ -623,6 +656,30 @@ async def create_transcription_job_endpoint(job_data: TranscriptionJobCreate, db
     return job
 
 
+@app.post("/transcription-jobs/claim", response_model=Optional[TranscriptionJobResponse])
+async def claim_transcription_job(request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
+    """Atomically claim the next available transcription job."""
+    job = claim_job(TranscriptionJob, db, request_data.worker_id)
+    if not job:
+        return None
+
+    try:
+        rabbitmq_client.connect()
+        publish_job_status_changed_event(rabbitmq_client, "transcription", str(job.id), job.status)
+    except Exception as error:
+        logger.error(f"Error publishing event: {str(error)}")
+
+    await publish_job_live_update(
+        "transcription",
+        str(job.id),
+        job.status,
+        video_id=str(job.video_id),
+        worker_id=job.worker_id,
+        lease_expires_at=job.lease_expires_at,
+    )
+    return job
+
+
 @app.get("/transcription-jobs/next", response_model=Optional[TranscriptionJobResponse])
 async def get_next_transcription_job_endpoint(db: Session = Depends(get_db)):
     """
@@ -638,6 +695,29 @@ async def get_next_transcription_job_endpoint(db: Session = Depends(get_db)):
     job = get_next_transcription_job(db)
     if not job:
         raise HTTPException(status_code=404, detail="No pending transcription jobs")
+    return job
+
+
+@app.post("/transcription-jobs/{job_id}/heartbeat", response_model=TranscriptionJobResponse)
+async def heartbeat_transcription_job(job_id: str, request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
+    """Refresh a transcription job lease for the owning worker."""
+    job = db.query(TranscriptionJob).filter(TranscriptionJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
+
+    try:
+        job = heartbeat_job(job, request_data.worker_id, db)
+    except JobLeaseOwnershipError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    await publish_job_live_update(
+        "transcription",
+        str(job.id),
+        job.status,
+        video_id=str(job.video_id),
+        worker_id=job.worker_id,
+        lease_expires_at=job.lease_expires_at,
+    )
     return job
 
 
@@ -724,6 +804,8 @@ async def start_transcription_job(job_id: str, db: Session = Depends(get_db)):
         str(job.id),
         job.status,
         video_id=str(job.video_id),
+        worker_id=job.worker_id,
+        lease_expires_at=job.lease_expires_at,
     )
 
     return job
@@ -747,7 +829,10 @@ async def complete_transcription_job(job_id: str, update_data: TranscriptionJobU
     if not job:
         raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
 
-    mark_job_completed(job, update_data.processing_time_seconds, db)
+    try:
+        mark_job_completed(job, update_data.processing_time_seconds, db, update_data.worker_id)
+    except JobLeaseOwnershipError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     await publish_job_live_update(
         "transcription",
         str(job.id),
@@ -775,7 +860,10 @@ async def fail_transcription_job(job_id: str, update_data: TranscriptionJobUpdat
     if not job:
         raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
 
-    mark_job_failed(job, update_data.error_details, db)
+    try:
+        mark_job_failed(job, update_data.error_details, db, update_data.worker_id)
+    except JobLeaseOwnershipError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     await publish_job_live_update(
         "transcription",
         str(job.id),
@@ -813,6 +901,8 @@ async def retry_transcription_job(job_id: str, db: Session = Depends(get_db)):
     job.completed_at = None
     job.processing_time_seconds = None
     job.error_details = None
+    job.worker_id = None
+    job.lease_expires_at = None
     db.commit()
     db.refresh(job)
 
@@ -822,6 +912,8 @@ async def retry_transcription_job(job_id: str, db: Session = Depends(get_db)):
         str(job.id),
         job.status,
         video_id=str(job.video_id),
+        worker_id=job.worker_id,
+        lease_expires_at=job.lease_expires_at,
     )
     return job
 
@@ -858,6 +950,30 @@ async def create_summarization_job_endpoint(job_data: SummarizationJobCreate, db
     return job
 
 
+@app.post("/summarization-jobs/claim", response_model=Optional[SummarizationJobResponse])
+async def claim_summarization_job(request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
+    """Atomically claim the next available summarization job."""
+    job = claim_job(SummarizationJob, db, request_data.worker_id)
+    if not job:
+        return None
+
+    try:
+        rabbitmq_client.connect()
+        publish_job_status_changed_event(rabbitmq_client, "summarization", str(job.id), job.status)
+    except Exception as error:
+        logger.error(f"Error publishing event: {str(error)}")
+
+    await publish_job_live_update(
+        "summarization",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+        worker_id=job.worker_id,
+        lease_expires_at=job.lease_expires_at,
+    )
+    return job
+
+
 @app.get("/summarization-jobs/next", response_model=Optional[SummarizationJobResponse])
 async def get_next_summarization_job_endpoint(db: Session = Depends(get_db)):
     """
@@ -873,6 +989,29 @@ async def get_next_summarization_job_endpoint(db: Session = Depends(get_db)):
     job = get_next_summarization_job(db)
     if not job:
         raise HTTPException(status_code=404, detail="No pending summarization jobs")
+    return job
+
+
+@app.post("/summarization-jobs/{job_id}/heartbeat", response_model=SummarizationJobResponse)
+async def heartbeat_summarization_job(job_id: str, request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
+    """Refresh a summarization job lease for the owning worker."""
+    job = db.query(SummarizationJob).filter(SummarizationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
+
+    try:
+        job = heartbeat_job(job, request_data.worker_id, db)
+    except JobLeaseOwnershipError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    await publish_job_live_update(
+        "summarization",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+        worker_id=job.worker_id,
+        lease_expires_at=job.lease_expires_at,
+    )
     return job
 
 
@@ -951,6 +1090,8 @@ async def start_summarization_job(job_id: str, db: Session = Depends(get_db)):
         str(job.id),
         job.status,
         transcript_id=str(job.transcript_id),
+        worker_id=job.worker_id,
+        lease_expires_at=job.lease_expires_at,
     )
     return job
 
@@ -973,7 +1114,10 @@ async def complete_summarization_job(job_id: str, update_data: SummarizationJobU
     if not job:
         raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
 
-    mark_job_completed(job, update_data.processing_time_seconds, db)
+    try:
+        mark_job_completed(job, update_data.processing_time_seconds, db, update_data.worker_id)
+    except JobLeaseOwnershipError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     await publish_job_live_update(
         "summarization",
         str(job.id),
@@ -1001,7 +1145,10 @@ async def fail_summarization_job(job_id: str, update_data: SummarizationJobUpdat
     if not job:
         raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
 
-    mark_job_failed(job, update_data.error_details, db)
+    try:
+        mark_job_failed(job, update_data.error_details, db, update_data.worker_id)
+    except JobLeaseOwnershipError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     await publish_job_live_update(
         "summarization",
         str(job.id),
@@ -1113,6 +1260,7 @@ async def update_transcript_segments(transcript_id: str, update_data: Transcript
     
     db.commit()
     db.refresh(transcript)
+    sync_transcript_search_rows(db, transcript)
 
     await publish_live_update(
         EVENT_TRANSCRIPT_UPDATED,
@@ -1156,6 +1304,7 @@ async def create_transcript(transcript_data: TranscriptCreate, db: Session = Dep
     db.add(transcript)
     db.commit()
     db.refresh(transcript)
+    sync_transcript_search_rows(db, transcript)
 
     # Publish transcript created event
     try:
@@ -1207,14 +1356,7 @@ async def update_video(video_id: str, update_data: VideoUpdate, db: Session = De
         video_id=str(video.id),
     )
 
-    return {
-        "id": str(video.id),
-        "filename": video.filename,
-        "status": video.status,
-        "created_at": video.created_at,
-        "file_hash": video.file_hash,
-        "video_metadata": video.video_metadata,
-    }
+    return build_video_response(video)
 
 
 @app.get("/videos/")
@@ -1267,38 +1409,7 @@ def download_video(video_id: str, request: Request, db: Session = Depends(get_db
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    # Try to find the video file in all video directories
-    filename = video.filename
-    file_path = os.path.join(VIDEO_DIR, filename)
-
-    # If file doesn't exist at the expected path, search in all video directories and their subdirectories
-    if not os.path.exists(file_path):
-        logger.info(f"Video file not found at {file_path}, searching in all video directories...")
-        found = False
-
-        # Search in all configured video directories
-        for video_dir in VIDEO_DIRS:
-            # First check directly in the video directory
-            test_path = os.path.join(video_dir, filename)
-            if os.path.exists(test_path):
-                file_path = test_path
-                logger.info(f"Found video file at: {file_path}")
-                found = True
-                break
-
-            # Then search in subdirectories
-            for root, _, files in os.walk(video_dir):
-                if filename in files:
-                    file_path = os.path.join(root, filename)
-                    logger.info(f"Found video file at: {file_path}")
-                    found = True
-                    break
-
-            if found:
-                break
-
-        if not found:
-            raise HTTPException(status_code=404, detail=f"Video file not found: {filename}")
+    file_path = get_video_storage_path(video, db)
 
     file_stat = os.stat(file_path)
     file_size = file_stat[stat.ST_SIZE]
@@ -1525,6 +1636,30 @@ async def create_translation_job_endpoint(job_data: TranslationJobCreate, db: Se
     return job
 
 
+@app.post("/translation-jobs/claim", response_model=Optional[TranslationJobResponse])
+async def claim_translation_job(request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
+    """Atomically claim the next available translation job."""
+    job = claim_job(TranslationJob, db, request_data.worker_id)
+    if not job:
+        return None
+
+    try:
+        rabbitmq_client.connect()
+        publish_job_status_changed_event(rabbitmq_client, "translation", str(job.id), job.status)
+    except Exception as error:
+        logger.error(f"Error publishing event: {str(error)}")
+
+    await publish_job_live_update(
+        "translation",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+        worker_id=job.worker_id,
+        lease_expires_at=job.lease_expires_at,
+    )
+    return job
+
+
 @app.get("/translation-jobs/next", response_model=Optional[TranslationJobResponse])
 async def get_next_translation_job_endpoint(db: Session = Depends(get_db)):
     """
@@ -1540,6 +1675,29 @@ async def get_next_translation_job_endpoint(db: Session = Depends(get_db)):
     job = get_next_translation_job(db)
     if not job:
         raise HTTPException(status_code=404, detail="No pending translation jobs")
+    return job
+
+
+@app.post("/translation-jobs/{job_id}/heartbeat", response_model=TranslationJobResponse)
+async def heartbeat_translation_job(job_id: str, request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
+    """Refresh a translation job lease for the owning worker."""
+    job = db.query(TranslationJob).filter(TranslationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Translation job not found: {job_id}")
+
+    try:
+        job = heartbeat_job(job, request_data.worker_id, db)
+    except JobLeaseOwnershipError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    await publish_job_live_update(
+        "translation",
+        str(job.id),
+        job.status,
+        transcript_id=str(job.transcript_id),
+        worker_id=job.worker_id,
+        lease_expires_at=job.lease_expires_at,
+    )
     return job
 
 
@@ -1626,6 +1784,8 @@ async def start_translation_job(job_id: str, db: Session = Depends(get_db)):
         str(job.id),
         job.status,
         transcript_id=str(job.transcript_id),
+        worker_id=job.worker_id,
+        lease_expires_at=job.lease_expires_at,
     )
 
     return job
@@ -1649,7 +1809,10 @@ async def complete_translation_job(job_id: str, update_data: TranslationJobUpdat
     if not job:
         raise HTTPException(status_code=404, detail=f"Translation job not found: {job_id}")
 
-    mark_job_completed(job, update_data.processing_time_seconds, db)
+    try:
+        mark_job_completed(job, update_data.processing_time_seconds, db, update_data.worker_id)
+    except JobLeaseOwnershipError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if update_data.error_details is not None:
         job.error_details = update_data.error_details
         db.commit()
@@ -1682,7 +1845,10 @@ async def fail_translation_job(job_id: str, update_data: TranslationJobUpdate, d
     if not job:
         raise HTTPException(status_code=404, detail=f"Translation job not found: {job_id}")
 
-    mark_job_failed(job, update_data.error_details, db)
+    try:
+        mark_job_failed(job, update_data.error_details, db, update_data.worker_id)
+    except JobLeaseOwnershipError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     await publish_job_live_update(
         "translation",
         str(job.id),
@@ -1851,46 +2017,4 @@ async def search_transcripts(q: str, db: Session = Depends(get_db)):
     """
     Search across all transcript segments for a given query string.
     """
-    if not q or len(q) < 2:
-        return []
-
-    query_lower = q.lower()
-    results = []
-
-    # Fetch all completed transcripts with their associated videos
-    transcripts = (
-        db.query(Transcript)
-        .join(Video, Transcript.video_id == Video.id)
-        .filter(Transcript.status.in_(["completed", "summarized"]))
-        .all()
-    )
-
-    for transcript in transcripts:
-        if not transcript.segments:
-            continue
-            
-        video_title = transcript.video.filename if transcript.video else "Unknown Video"
-        
-        for idx, segment in enumerate(transcript.segments):
-            text = segment.get("text", "")
-            if query_lower in text.lower():
-                results.append({
-                    "video_id": transcript.video_id,
-                    "video_title": video_title,
-                    "transcript_id": transcript.id,
-                    "segment_id": segment.get("id", idx),
-                    "start_time": segment.get("start_time", 0),
-                    "end_time": segment.get("end_time", 0),
-                    "text": text,
-                    "speaker": segment.get("speaker", "Unknown")
-                })
-                
-                # Limit total results to prevent massive payloads
-                if len(results) >= 50:
-                    break
-        
-        if len(results) >= 50:
-            break
-
-    # Sort results by start_time or video_id as needed
-    return results
+    return search_transcript_segments(db, q.lower())

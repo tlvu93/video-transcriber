@@ -23,6 +23,10 @@ interface CreateTranscriptionJobPayload {
   video_id: string;
 }
 
+interface CreateSummarizationJobPayload {
+  transcript_id: string;
+}
+
 interface UpdateVideoPayload {
   status?: string;
   video_metadata?: Record<string, unknown>;
@@ -141,6 +145,17 @@ export async function fetchSummarizationJobs(
   const response = await apiClient.get<SummarizationJob[]>(
     `/summarization-jobs?transcript_id=${transcriptId}`
   );
+  return response.data;
+}
+
+export async function createSummarizationJob(
+  transcriptId: string
+): Promise<SummarizationJob> {
+  const response = await apiClient.post<
+    SummarizationJob,
+    { data: SummarizationJob },
+    CreateSummarizationJobPayload
+  >("/summarization-jobs/", { transcript_id: transcriptId });
   return response.data;
 }
 

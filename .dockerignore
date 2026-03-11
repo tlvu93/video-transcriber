@@ -24,6 +24,7 @@ var/
 .installed.cfg
 *.egg
 .pytest_cache/
+.mypy_cache/
 .coverage
 htmlcov/
 .tox/
@@ -53,13 +54,20 @@ frontend/node_modules/
 frontend/dist/
 frontend/.cache/
 frontend/coverage/
+.tmp/
 
 # Project specific
 data/videos/*
+!data/videos/.gitkeep
 data/transcriptions/*
+!data/transcriptions/.gitkeep
 data/summaries/*
+!data/summaries/.gitkeep
 data/db/*
+!data/db/.gitkeep
 ollama-data/
+services/data/
+services/api_service/data/
 
 # Logs
 *.log
@@ -71,13 +79,3 @@ logs/
 .env.development.local
 .env.test.local
 .env.production.local
-
-# Docker
-.dockerignore
-Dockerfile
-docker-compose.yml
-
-# Documentation
-README.md
-LICENSE
-docs/

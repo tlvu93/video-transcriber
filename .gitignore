@@ -20,6 +20,7 @@ var/
 .installed.cfg
 *.egg
 .pytest_cache/
+.mypy_cache/
 .coverage
 htmlcov/
 .tox/
@@ -51,6 +52,8 @@ data/transcriptions/*
 !data/transcriptions/.gitkeep
 data/summaries/*
 !data/summaries/.gitkeep
+data/benchmarks/*
+!data/benchmarks/.gitkeep
 data/db/*
 !data/db/.gitkeep
 ollama-data/
@@ -68,3 +71,10 @@ logs/
 
 # Auto-generated Docker files
 docker-compose.override.yml
+
+.tmp/
+frontend/node_modules/
+frontend/dist/
+services/data/
+services/api_service/data/
+data/videos/temp_audio_*.wav

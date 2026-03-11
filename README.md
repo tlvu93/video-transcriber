@@ -1,6 +1,6 @@
 # Video Transcriber
 
-Prototype application for automatic video transcription and summarization.
+Privacy-first application for automatic video transcription, summarization, translation, and transcript review.
 
 ## Overview
 
@@ -9,11 +9,12 @@ Video Transcriber is a hobby project for processing video files, generating tran
 ## Features
 
 - **Automatic Video Detection**: Monitors directories for new video files
-- **Speech-to-Text Transcription**: Converts spoken content to text using Whisper
-- **AI-Powered Summarization**: Generates concise summaries using Ollama LLM
-- **Web Interface**: User-friendly frontend for viewing videos, transcripts, and summaries
-- **API Access**: RESTful API for programmatic access to all features
-- **Job Queue System**: Efficient processing of multiple videos
+- **Speech-to-Text Transcription**: Converts spoken content to text using WhisperX
+- **AI-Powered Summarization**: Generates concise summaries using Ollama
+- **On-Demand Translation**: Creates translated transcripts for supported languages
+- **Web Interface**: Frontend for viewing videos, transcripts, summaries, and translations
+- **REST API + SSE**: Programmatic access plus live status updates
+- **Lease-Based Job Processing**: Race-safe multi-worker claiming backed by PostgreSQL
 
 ## Architecture
 
@@ -84,14 +85,14 @@ graph TD
 
 The system uses a combination of two approaches for service communication:
 
-1. **Event-Driven (Push Model)**: Services subscribe to specific events via RabbitMQ
-2. **Polling (Pull Model)**: Services periodically check the API for pending jobs
+1. **Event-Driven Wake-Ups**: Services subscribe to RabbitMQ events as wake-up signals
+2. **API Job Leasing**: Workers atomically claim and heartbeat jobs through the API
 
 ## Installation
 
 ### Prerequisites
 
-- Docker and Docker Compose
+- Docker with `docker compose`
 - Git
 
 ### Quick Start
@@ -119,8 +120,8 @@ The system uses a combination of two approaches for service communication:
    Or manually:
 
    ```bash
-   ./setup-volumes.sh
-   docker-compose up
+   ./scripts/setup-volumes.sh
+   docker compose up
    ```
 
 ### Dynamic Video Directory Mounting
@@ -146,11 +147,11 @@ HOST_VIDEO_PATHS=/home/user/videos,/media/external/movies,/data/recordings
 make up
 
 # Or run setup manually
-./setup-volumes.sh
-docker-compose up
+./scripts/setup-volumes.sh
+docker compose up
 ```
 
-For detailed configuration options, see [DOCKER_VOLUMES.md](DOCKER_VOLUMES.md).
+For detailed configuration options, see [docs/operations/docker-volumes.md](docs/operations/docker-volumes.md).
 
 ## Usage
 
@@ -162,18 +163,12 @@ For detailed configuration options, see [DOCKER_VOLUMES.md](DOCKER_VOLUMES.md).
 
 ## API Endpoints
 
-### Authentication
-
-- `POST /auth/token`: Get an access token
-- `POST /auth/register`: Register a new user (admin only)
-- `GET /auth/me`: Get current user information
-
 ### Videos
 
 - `POST /videos/upload`: Upload a new video
 - `GET /videos`: List all videos
 - `GET /videos/{video_id}`: Get video details
-- `DELETE /videos/{video_id}`: Delete a video
+- `POST /videos/register`: Register an existing on-disk video with optional `storage_path`
 
 ### Transcripts
 
@@ -185,13 +180,22 @@ For detailed configuration options, see [DOCKER_VOLUMES.md](DOCKER_VOLUMES.md).
 
 - `GET /summaries`: List all summaries
 - `GET /summaries/{summary_id}`: Get summary details
-- `GET /summaries/transcript/{transcript_id}`: Get summary for a transcript
 
-### Jobs
+### Translations
 
-- `GET /jobs`: List all jobs
-- `GET /jobs/{job_id}`: Get job details
-- `GET /jobs/status/{status}`: List jobs by status
+- `POST /translation-jobs`: Create an on-demand translation job
+- `GET /translation-jobs`: List translation jobs
+- `GET /translated-transcripts`: List translated transcripts
+- `PUT /translated-transcripts/{translated_transcript_id}/segments`: Update translated transcript segments
+
+### Lease-Based Worker Endpoints
+
+- `POST /transcription-jobs/claim`
+- `POST /summarization-jobs/claim`
+- `POST /translation-jobs/claim`
+- `POST /transcription-jobs/{job_id}/heartbeat`
+- `POST /summarization-jobs/{job_id}/heartbeat`
+- `POST /translation-jobs/{job_id}/heartbeat`
 
 ## Development
 
@@ -202,18 +206,22 @@ video-transcriber/
 ├── common/                 # Shared code between services
 ├── data/                   # Data storage
 │   ├── videos/             # Video files
+├── docs/                   # Architecture and operational notes
 ├── frontend/               # React frontend
 ├── services/               # Backend services
 │   ├── api_service/        # HTTP API
 │   ├── transcription_service/ # Video transcription
 │   ├── summarization_service/ # Transcript summarization
+│   ├── translation_service/ # Transcript translation
 │   └── watcher_service/    # File system monitoring
+├── scripts/                # Local smoke and helper scripts
+├── tests/                  # Integration and manual verification
 └── docker-compose.yml      # Docker configuration
 ```
 
 ### Local Development
 
-For local development of individual services, refer to the README.md in each service directory.
+For local development, use the service-local `pyproject.toml` and `Dockerfile` files together with the repo-level notes under `docs/`.
 
 ## Configuration
 
@@ -221,5 +229,29 @@ The application can be configured through environment variables:
 
 - `VIDEO_DIRS`: Directories to monitor for videos (default: `/app/data/videos`)
 - `MAX_WORKERS`: Maximum number of transcription worker threads (default: `2`)
-- `LLM_MODEL`: Ollama model to use for summarization (default: `deepseek-r1`)
 - `LLM_HOST`: URL of the Ollama API (default: `http://ollama:11434/api/generate`)
+- `SUMMARIZATION_LLM_MODEL`: Ollama model used by the summarization worker (default: `mistral-small3.1`)
+- `TRANSLATION_LLM_MODEL`: Ollama model used by the translation worker (default: `qwen3:14b`)
+- `LLM_MODEL`: Shared fallback when a task-specific model is not set (default: `qwen3:14b`)
+- `JOB_HEARTBEAT_INTERVAL_SECONDS`: Lease heartbeat cadence for workers (default: `60`)
+- `JOB_CLAIM_POLL_SECONDS`: Fallback claim poll interval when no wake-up event is received (default: `15`)
+
+## Operations
+
+- Backend API and schema contract: `docs/architecture/foundation-sprint-contract.md`
+- Architecture flow notes: `docs/architecture/data-flow-diagram.md`
+- Production runtime note for PostgreSQL 14 to 16 upgrades: `docs/operations/production-notes.md`
+- Dynamic volume mounting guide: `docs/operations/docker-volumes.md`
+- Local smoke run: `scripts/smoke-compose.sh`
+
+## Model Benchmarking
+
+Use `scripts/benchmark_ollama_models.py` to compare candidate Ollama models against a real transcript. The script can read a transcript JSON export or pull the latest transcript from the local API, then write Markdown and JSON reports under `data/benchmarks/`.
+
+Examples:
+
+```bash
+python3 scripts/benchmark_ollama_models.py --latest-transcript
+python3 scripts/benchmark_ollama_models.py --input /path/to/transcript.json --summary-model mistral-small3.1 --summary-model qwen3:14b
+python3 scripts/benchmark_ollama_models.py --task translation --latest-transcript --translation-model qwen3:14b --translation-model deepseek-r1 --target-language de
+```

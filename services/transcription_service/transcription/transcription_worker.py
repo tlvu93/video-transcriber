@@ -10,13 +10,14 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import whisperx
 from transcription.api_client import (
+    complete_transcription_job_api,
     create_transcript_api,
+    fail_transcription_job_api,
     get_job_from_api,
     get_video_from_api,
-    update_job_status_api,
     update_video_status_api,
 )
-from transcription.config import VIDEO_DIRS
+from transcription.config import HF_TOKEN, VIDEO_DIRS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -151,12 +152,12 @@ def get_whisperx_model():
         return _model, _device
 
 
-def find_video_file(filename: str) -> str:
-    """Find video file in configured directories."""
-    # Check default path first
-    default_path = os.path.join("/app/data/videos", filename)
-    if os.path.exists(default_path):
-        return default_path
+def find_video_file(filename: str, storage_path: Optional[str] = None) -> str:
+    """Find a video file, preferring the canonical storage path when present."""
+    if storage_path:
+        if os.path.exists(storage_path):
+            return storage_path
+        logger.warning("Stored video path does not exist on disk, falling back to legacy search: %s", storage_path)
 
     # Search in all video directories
     for video_dir in VIDEO_DIRS:
@@ -394,10 +395,9 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict], Optional[s
 
             # Try speaker diarization
             try:
-                from transcription.config import HF_TOKEN
-
-                print(f"HF_TOKEN: {HF_TOKEN}")
-
+                if not HF_TOKEN:
+                    logger.info("HF_TOKEN not configured, skipping speaker diarization")
+                    raise ValueError("Speaker diarization disabled without HF_TOKEN")
                 logger.info("Performing speaker diarization...")
                 diarize_model = whisperx.diarize.DiarizationPipeline(
                     use_auth_token=HF_TOKEN,
@@ -410,8 +410,8 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict], Optional[s
                 speakers = set([s.get("speaker") for s in result["segments"] if "speaker" in s])
                 logger.info(f"Speaker diarization completed. Identified {len(speakers)} speakers.")
             except Exception as e:
-                logger.error(f"Speaker diarization failed with error: {str(e)}")
-                logger.error(f"Error traceback: {traceback.format_exc()}")
+                logger.warning(f"Speaker diarization unavailable: {str(e)}")
+                logger.debug("Speaker diarization traceback: %s", traceback.format_exc())
 
             # Clean up memory
             del audio
@@ -465,7 +465,7 @@ def format_segments(segments: List[Dict]) -> Optional[List[Dict]]:
     return formatted_segments
 
 
-def process_transcription_job(job_id: str) -> bool:
+def process_transcription_job(job_id: str, worker_id: str) -> bool:
     """Process a transcription job."""
     start_time = time.time()
     video_id = None
@@ -476,13 +476,13 @@ def process_transcription_job(job_id: str) -> bool:
         # Get job and video details
         job = get_job_from_api(job_id)
         video_id = job["video_id"]
-        update_job_status_api(job_id, "processing")
 
         video = get_video_from_api(video_id)
         filename = video["filename"]
+        update_video_status_api(video_id, "processing")
 
-        # Find and validate video file
-        filepath = find_video_file(filename)
+        # Prefer the canonical storage path and only fall back to legacy directory scans.
+        filepath = find_video_file(filename, video.get("storage_path"))
         if os.path.getsize(filepath) == 0:
             raise ValueError(f"Video file is empty (0 bytes): {filepath}")
 
@@ -499,7 +499,7 @@ def process_transcription_job(job_id: str) -> bool:
         # Update statuses
         update_video_status_api(video_id, "transcribed")
         processing_time = time.time() - start_time
-        update_job_status_api(job_id, "completed", processing_time)
+        complete_transcription_job_api(job_id, worker_id, processing_time)
 
         logger.info(f"Transcription completed for video {filename} in {processing_time: .2f} seconds")
         return True
@@ -511,7 +511,7 @@ def process_transcription_job(job_id: str) -> bool:
         error_details = {"error": str(e), "traceback": traceback.format_exc()[:1000]}
 
         try:
-            update_job_status_api(job_id, "failed", error_details=error_details)
+            fail_transcription_job_api(job_id, worker_id, error_details=error_details)
         except Exception:
             pass
 

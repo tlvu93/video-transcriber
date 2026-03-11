@@ -1,16 +1,18 @@
 import argparse
 import logging
 import os
+import socket
 import sys
+import threading
 import traceback
-from typing import Any, Dict
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, Dict, Set
 
 from transcription.api_client import (
-    get_all_pending_transcription_jobs_api,
-    get_job_from_api,
-    get_next_transcription_job_api,
+    claim_next_transcription_job_api,
+    heartbeat_transcription_job_api,
 )
-from transcription.queue_manager import TranscriptionQueueManager
+from transcription.config import JOB_CLAIM_POLL_SECONDS, JOB_HEARTBEAT_INTERVAL_SECONDS, WORKER_ID
 from transcription.transcription_worker import process_transcription_job
 
 from common.messaging import EVENT_JOB_STATUS_CHANGED, EVENT_VIDEO_CREATED, RabbitMQClient
@@ -26,8 +28,13 @@ logger = logging.getLogger("transcription")
 # Initialize RabbitMQ client
 rabbitmq_client = RabbitMQClient()
 
-# Initialize queue manager (will be set in main)
-queue_manager = None
+wake_event = threading.Event()
+stop_event = threading.Event()
+executor: ThreadPoolExecutor | None = None
+worker_id = WORKER_ID
+max_parallel_jobs = 1
+active_futures: Set[Future[bool]] = set()
+active_futures_lock = threading.Lock()
 
 
 def handle_video_created_event(event_data: Dict[str, Any]):
@@ -47,15 +54,7 @@ def handle_video_created_event(event_data: Dict[str, Any]):
 
         logger.info(f"Received video.created event for video {video_id} ({filename})")
 
-        # Get the next transcription job from the API
-        # The API service should have already created a transcription job for this video
-        job = get_next_transcription_job_api()
-
-        if job and job["video_id"] == video_id:
-            logger.info(f"Adding transcription job {job['id']} for video {video_id} to queue")
-            queue_manager.add_job(job)
-        else:
-            logger.warning(f"No transcription job found for video {video_id}")
+        wake_event.set()
 
     except Exception as e:
         logger.error(f"Error handling video.created event: {str(e)}")
@@ -84,19 +83,93 @@ def handle_job_status_changed_event(event_data: Dict[str, Any]):
 
         logger.info(f"Received job.status.changed event for {job_type} job {job_id}: {status}")
 
-        # If the job is pending, add it to the queue
+        # Pending jobs are now claimed atomically from the API.
         if status == "pending":
-            # Get job details
-            try:
-                job = get_job_from_api(job_id)
-                logger.info(f"Adding transcription job {job_id} to queue")
-                queue_manager.add_job(job)
-            except Exception as e:
-                logger.error(f"Error getting job details: {str(e)}")
+            wake_event.set()
 
     except Exception as e:
         logger.error(f"Error handling job.status.changed event: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
+
+
+def available_capacity() -> int:
+    """Return how many jobs can still be claimed by this worker process."""
+    with active_futures_lock:
+        return max_parallel_jobs - len(active_futures)
+
+
+def heartbeat_loop(job_id: str, heartbeat_stop_event: threading.Event) -> None:
+    """Refresh the active lease for a claimed job until processing stops."""
+    while not heartbeat_stop_event.wait(JOB_HEARTBEAT_INTERVAL_SECONDS):
+        try:
+            heartbeat_transcription_job_api(job_id, worker_id)
+        except Exception as error:
+            logger.warning("Failed to heartbeat transcription job %s: %s", job_id, error)
+
+
+def run_claimed_job(job: Dict[str, Any]) -> bool:
+    """Process a claimed job while keeping its lease alive."""
+    heartbeat_stop_event = threading.Event()
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        args=(str(job["id"]), heartbeat_stop_event),
+        daemon=True,
+        name=f"transcription-heartbeat-{job['id']}",
+    )
+    heartbeat_thread.start()
+
+    try:
+        return process_transcription_job(str(job["id"]), worker_id)
+    finally:
+        heartbeat_stop_event.set()
+        heartbeat_thread.join(timeout=5)
+
+
+def on_job_finished(future: Future[bool]) -> None:
+    """Track active futures and trigger another claim pass when a slot frees up."""
+    with active_futures_lock:
+        active_futures.discard(future)
+
+    try:
+        future.result()
+    except Exception as error:
+        logger.error("Transcription worker future failed: %s", error)
+        logger.error("Exception traceback: %s", traceback.format_exc())
+    finally:
+        wake_event.set()
+
+
+def submit_claimed_job(job: Dict[str, Any]) -> None:
+    """Submit a claimed job to the thread pool."""
+    assert executor is not None
+    future = executor.submit(run_claimed_job, job)
+    with active_futures_lock:
+        active_futures.add(future)
+    future.add_done_callback(on_job_finished)
+
+
+def claim_available_jobs() -> None:
+    """Claim as many jobs as possible without exceeding worker capacity."""
+    while not stop_event.is_set() and available_capacity() > 0:
+        job = claim_next_transcription_job_api(worker_id)
+        if not job:
+            return
+
+        logger.info("Claimed transcription job %s for video %s", job["id"], job["video_id"])
+        submit_claimed_job(job)
+
+
+def claim_loop() -> None:
+    """Run an event-driven claim loop with a short polling fallback."""
+    while not stop_event.is_set():
+        wake_event.wait(timeout=JOB_CLAIM_POLL_SECONDS)
+        wake_event.clear()
+
+        try:
+            claim_available_jobs()
+        except Exception as error:
+            logger.error("Error claiming transcription jobs: %s", error)
+            logger.error("Exception traceback: %s", traceback.format_exc())
 
 
 def run_worker(max_workers: int = 1):
@@ -106,15 +179,22 @@ def run_worker(max_workers: int = 1):
     Args:
         max_workers: Maximum number of worker threads to use
     """
-    global queue_manager
+    global executor
+    global max_parallel_jobs
 
-    logger.info(f"Starting transcription worker with {max_workers} workers")
+    max_parallel_jobs = max_workers
+    executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="transcription-job")
+    claim_thread = threading.Thread(target=claim_loop, daemon=True, name="transcription-claim-loop")
+    claim_thread.start()
+
+    logger.info(
+        "Starting transcription worker with %s workers (worker_id=%s on %s)",
+        max_workers,
+        worker_id,
+        socket.gethostname(),
+    )
 
     try:
-        # Initialize queue manager
-        queue_manager = TranscriptionQueueManager(max_workers=max_workers)
-        queue_manager.start(process_transcription_job)
-
         # Connect to RabbitMQ
         rabbitmq_client.connect()
 
@@ -132,17 +212,8 @@ def run_worker(max_workers: int = 1):
             "transcription_job_status_queue",
         )
 
-        # TODO: Check if transcription jobs should pull from the API or if they should be pushed by the API service
-        # Process all existing pending jobs
         logger.info("Checking for existing pending jobs")
-        jobs = get_all_pending_transcription_jobs_api()
-        if jobs:
-            logger.info(f"Found {len(jobs)} pending transcription jobs")
-            for job in jobs:
-                logger.info(f"Adding transcription job {job['id']} for video {job['video_id']} to queue")
-                queue_manager.add_job(job)
-        else:
-            logger.info("No pending transcription jobs found")
+        wake_event.set()
 
         # Start consuming messages
         logger.info("Waiting for events...")
@@ -150,16 +221,21 @@ def run_worker(max_workers: int = 1):
 
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, shutting down")
-        queue_manager.stop()
-        rabbitmq_client.stop_consuming()
-        rabbitmq_client.close()
 
     except Exception as e:
         logger.error(f"Error in worker: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
-        if queue_manager:
-            queue_manager.stop()
+    finally:
+        stop_event.set()
+        wake_event.set()
+        try:
+            rabbitmq_client.stop_consuming()
+        except Exception:
+            pass
         rabbitmq_client.close()
+        claim_thread.join(timeout=5)
+        if executor is not None:
+            executor.shutdown(wait=True)
 
 
 if __name__ == "__main__":

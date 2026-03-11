@@ -4,7 +4,7 @@ This project supports automatically mounting multiple video directories from you
 
 ## How It Works
 
-The system uses a setup script (`setup-volumes.sh`) that reads your `.env` file and generates a `docker-compose.override.yml` file with the appropriate volume mounts.
+The system uses `scripts/setup-volumes.sh` to read your `.env` file and generate a `docker-compose.override.yml` file with the appropriate volume mounts.
 
 ## Configuration
 
@@ -35,7 +35,7 @@ If `HOST_VIDEO_PATHS` is empty or not set, the system will use `./data/videos` a
 Before starting Docker Compose, run the setup script to generate volume mounts:
 
 ```bash
-./setup-volumes.sh
+./scripts/setup-volumes.sh
 ```
 
 This will:
@@ -47,7 +47,7 @@ This will:
 ### 2. Start Docker Compose
 
 ```bash
-docker-compose up
+docker compose up
 ```
 
 Docker Compose will automatically use both `docker-compose.yml` and `docker-compose.override.yml`.
@@ -109,7 +109,7 @@ Result:
    - `transcription-worker`
    - `watcher`
 
-5. **Re-run Setup**: If you change your `.env` configuration, re-run `./setup-volumes.sh` before restarting Docker Compose.
+5. **Re-run Setup**: If you change your `.env` configuration, re-run `./scripts/setup-volumes.sh` before restarting Docker Compose.
 
 ## Troubleshooting
 
@@ -127,7 +127,7 @@ If Docker complains about paths not existing:
 
 1. Verify the host paths exist: `ls -la /your/host/path`
 2. Check your `.env` configuration
-3. Re-run `./setup-volumes.sh`
+3. Re-run `./scripts/setup-volumes.sh`
 
 ### Override File Issues
 
@@ -135,5 +135,5 @@ If you need to reset the override file:
 
 ```bash
 rm docker-compose.override.yml
-./setup-volumes.sh
+./scripts/setup-volumes.sh
 ```

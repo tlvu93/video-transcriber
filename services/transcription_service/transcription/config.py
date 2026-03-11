@@ -1,4 +1,6 @@
 import os
+import socket
+import uuid
 from pathlib import Path
 
 # Base directories
@@ -18,3 +20,9 @@ API_URL = os.environ.get("API_URL", "http://api:8000")
 
 # HuggingFace configuration
 HF_TOKEN = os.environ.get("HF_TOKEN", None)
+JOB_HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("JOB_HEARTBEAT_INTERVAL_SECONDS", "60"))
+JOB_CLAIM_POLL_SECONDS = int(os.environ.get("JOB_CLAIM_POLL_SECONDS", "15"))
+WORKER_ID = os.environ.get(
+    "WORKER_ID",
+    f"transcription-{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}",
+)

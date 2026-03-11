@@ -1,13 +1,18 @@
 import argparse
 import logging
 import os
+import socket
 import sys
+import threading
 import traceback
 from typing import Any, Dict
 
-import requests
-from summarization.config import API_URL
-from summarization.worker import process_summarization_job
+from summarization.config import JOB_CLAIM_POLL_SECONDS, JOB_HEARTBEAT_INTERVAL_SECONDS, WORKER_ID
+from summarization.worker import (
+    claim_next_summarization_job_api,
+    heartbeat_summarization_job_api,
+    process_summarization_job,
+)
 
 from common.messaging import EVENT_JOB_STATUS_CHANGED, EVENT_TRANSCRIPTION_CREATED, RabbitMQClient
 
@@ -21,20 +26,11 @@ logger = logging.getLogger("summarization")
 
 # Initialize RabbitMQ client
 rabbitmq_client = RabbitMQClient()
-
-
-def get_next_summarization_job_api():
-    """Get the next pending summarization job from the API."""
-    try:
-        response = requests.get(f"{API_URL}/summarization-jobs/next")
-        if response.status_code == 404:
-            # No pending jobs
-            return None
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error getting next summarization job: {str(e)}")
-        return None
+worker_id = WORKER_ID
+stop_event = threading.Event()
+wake_event = threading.Event()
+job_thread: threading.Thread | None = None
+job_thread_lock = threading.Lock()
 
 
 def handle_transcription_created_event(event_data: Dict[str, Any]):
@@ -54,15 +50,7 @@ def handle_transcription_created_event(event_data: Dict[str, Any]):
 
         logger.info(f"Received transcription.created event for transcript {transcript_id} (video {video_id})")
 
-        # Get the next summarization job from the API
-        # The API service should have already created a summarization job for this transcript
-        job = get_next_summarization_job_api()
-
-        if job and job["transcript_id"] == transcript_id:
-            logger.info(f"Processing summarization job {job['id']} for transcript {transcript_id}")
-            process_summarization_job(job["id"])
-        else:
-            logger.warning(f"No summarization job found for transcript {transcript_id}")
+        wake_event.set()
 
     except Exception as e:
         logger.error(f"Error handling transcription.created event: {str(e)}")
@@ -91,10 +79,9 @@ def handle_job_status_changed_event(event_data: Dict[str, Any]):
 
         logger.info(f"Received job.status.changed event for {job_type} job {job_id}: {status}")
 
-        # If the job is pending, process it
+        # Pending jobs are claimed atomically from the API.
         if status == "pending":
-            logger.info(f"Processing summarization job {job_id}")
-            process_summarization_job(job_id)
+            wake_event.set()
 
     except Exception as e:
         logger.error(f"Error handling job.status.changed event: {str(e)}")
@@ -105,7 +92,69 @@ def run_worker():
     """
     Run the summarization worker in event-based mode.
     """
-    logger.info("Starting summarization worker")
+    logger.info("Starting summarization worker (worker_id=%s on %s)", worker_id, socket.gethostname())
+
+    def heartbeat_loop(job_id: str, heartbeat_stop_event: threading.Event) -> None:
+        while not heartbeat_stop_event.wait(JOB_HEARTBEAT_INTERVAL_SECONDS):
+            try:
+                heartbeat_summarization_job_api(job_id, worker_id)
+            except Exception as error:
+                logger.warning("Failed to heartbeat summarization job %s: %s", job_id, error)
+
+    def run_claimed_job(job: Dict[str, Any]) -> None:
+        global job_thread
+
+        heartbeat_stop_event = threading.Event()
+        heartbeat_thread = threading.Thread(
+            target=heartbeat_loop,
+            args=(str(job["id"]), heartbeat_stop_event),
+            daemon=True,
+            name=f"summarization-heartbeat-{job['id']}",
+        )
+        heartbeat_thread.start()
+
+        try:
+            process_summarization_job(str(job["id"]), worker_id)
+        finally:
+            heartbeat_stop_event.set()
+            heartbeat_thread.join(timeout=5)
+            with job_thread_lock:
+                job_thread = None
+            wake_event.set()
+
+    def claim_available_job() -> None:
+        global job_thread
+
+        with job_thread_lock:
+            if job_thread and job_thread.is_alive():
+                return
+
+            job = claim_next_summarization_job_api(worker_id)
+            if not job:
+                return
+
+            logger.info("Claimed summarization job %s for transcript %s", job["id"], job["transcript_id"])
+            job_thread = threading.Thread(
+                target=run_claimed_job,
+                args=(job,),
+                daemon=True,
+                name=f"summarization-job-{job['id']}",
+            )
+            job_thread.start()
+
+    def claim_loop() -> None:
+        while not stop_event.is_set():
+            wake_event.wait(timeout=JOB_CLAIM_POLL_SECONDS)
+            wake_event.clear()
+
+            try:
+                claim_available_job()
+            except Exception as error:
+                logger.error("Error claiming summarization jobs: %s", error)
+                logger.error("Exception traceback: %s", traceback.format_exc())
+
+    claim_thread = threading.Thread(target=claim_loop, daemon=True, name="summarization-claim-loop")
+    claim_thread.start()
 
     try:
         # Connect to RabbitMQ
@@ -125,12 +174,8 @@ def run_worker():
             "summarization_job_status_queue",
         )
 
-        # Process any existing pending jobs
         logger.info("Checking for existing pending jobs")
-        job = get_next_summarization_job_api()
-        if job:
-            logger.info(f"Found pending summarization job {job['id']} for transcript {job['transcript_id']}")
-            process_summarization_job(job["id"])
+        wake_event.set()
 
         # Start consuming messages
         logger.info("Waiting for events...")
@@ -138,13 +183,23 @@ def run_worker():
 
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, shutting down")
-        rabbitmq_client.stop_consuming()
-        rabbitmq_client.close()
 
     except Exception as e:
         logger.error(f"Error in worker: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
+    finally:
+        stop_event.set()
+        wake_event.set()
+        try:
+            rabbitmq_client.stop_consuming()
+        except Exception:
+            pass
         rabbitmq_client.close()
+        claim_thread.join(timeout=5)
+        with job_thread_lock:
+            active_job_thread = job_thread
+        if active_job_thread:
+            active_job_thread.join(timeout=5)
 
 
 if __name__ == "__main__":

@@ -52,28 +52,59 @@ else
     echo "$(date): Ollama server is responding"
 fi
 
-# Pull the model
-echo "$(date): Pulling deepseek-r1 model..."
-ollama pull deepseek-r1
+DEFAULT_MODEL="qwen3:14b"
+MODELS_TO_PULL=""
+TEST_MODEL=""
 
-# Verify the model was pulled successfully
-echo "$(date): Verifying model was pulled successfully..."
-if ollama list | grep -q "deepseek-r1"; then
-    echo "$(date): Model deepseek-r1 is available"
-else
-    echo "$(date): WARNING - Model deepseek-r1 may not be available"
-    echo "$(date): Available models:"
-    ollama list
+add_model() {
+    model="$1"
+    if [ -z "$model" ]; then
+        return
+    fi
+
+    case " $MODELS_TO_PULL " in
+        *" $model "*) ;;
+        *) MODELS_TO_PULL="${MODELS_TO_PULL} ${model}" ;;
+    esac
+}
+
+add_model "$SUMMARIZATION_LLM_MODEL"
+add_model "$TRANSLATION_LLM_MODEL"
+add_model "$LLM_MODEL"
+
+if [ -z "$MODELS_TO_PULL" ]; then
+    add_model "$DEFAULT_MODEL"
 fi
 
-# Test the model with a simple prompt
-echo "$(date): Testing model with a simple prompt..."
-if ! curl -s -X POST http://localhost:11434/api/generate -d '{"model": "deepseek-r1", "prompt": "Say hello", "stream": false}' > /dev/null; then
+for model in $MODELS_TO_PULL; do
+    if [ -z "$TEST_MODEL" ]; then
+        TEST_MODEL="$model"
+    fi
+
+    echo "$(date): Pulling Ollama model ${model}..."
+    ollama pull "$model"
+done
+
+# Verify the models were pulled successfully
+echo "$(date): Verifying configured models are available..."
+for model in $MODELS_TO_PULL; do
+    if ollama list | grep -Fq "$model"; then
+        echo "$(date): Model ${model} is available"
+    else
+        echo "$(date): WARNING - Model ${model} may not be available"
+        echo "$(date): Available models:"
+        ollama list
+    fi
+done
+
+# Test the first configured model with a simple prompt
+echo "$(date): Testing model ${TEST_MODEL} with a simple prompt..."
+if ! curl -s -X POST http://localhost:11434/api/generate -d "{\"model\": \"${TEST_MODEL}\", \"prompt\": \"Say hello\", \"stream\": false}" > /dev/null; then
     echo "$(date): WARNING - Model test failed"
 else
     echo "$(date): Model test successful"
 fi
 
 # Wait for the server process to finish (which it won't unless killed)
-echo "$(date): Ollama server is running with model deepseek-r1 available"
+echo "$(date): Ollama server is running with configured model(s):${MODELS_TO_PULL}"
 wait $SERVER_PID

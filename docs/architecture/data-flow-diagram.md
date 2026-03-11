@@ -48,7 +48,7 @@ graph TD
     API -->|Publish job.status.changed event| RabbitMQ
 
     %% Transcription Service Flow
-    TranscriptionWorker -->|Get next job| API
+    TranscriptionWorker -->|Claim leased job| API
     TranscriptionWorker -->|Read video file| FileSystem
     TranscriptionWorker -->|Use Whisper model| Whisper
     TranscriptionWorker -->|Store transcript| API
@@ -56,7 +56,7 @@ graph TD
     TranscriptionWorker -->|Publish transcription.created event| RabbitMQ
 
     %% Summarization Service Flow
-    SummarizationWorker -->|Get next job| API
+    SummarizationWorker -->|Claim leased job| API
     SummarizationWorker -->|Read transcript| Postgres
     SummarizationWorker -->|Use LLM for summarization| Ollama
     SummarizationWorker -->|Store summary| API
@@ -93,9 +93,9 @@ graph TD
 2. **Transcription Process**:
 
    - API Service creates a transcription job in PostgreSQL
-   - Transcription Service receives a `video.created` event from RabbitMQ
-   - Transcription Service also listens for `job.status.changed` events
-   - Transcription Service checks for pending jobs at startup (polling)
+   - Transcription Service receives wake-up events from RabbitMQ
+   - Transcription Service claims jobs through the API leasing endpoints
+   - Transcription Service heartbeats while processing long-running work
    - Transcription Service processes the video using Whisper model
    - Transcription Service stores the transcript via API
    - Transcription Service publishes a `transcription.created` event
@@ -103,9 +103,9 @@ graph TD
 3. **Summarization Process**:
 
    - API Service creates a summarization job
-   - Summarization Service receives a `transcription.created` event from RabbitMQ
-   - Summarization Service also listens for `job.status.changed` events
-   - Summarization Service checks for pending jobs at startup (polling)
+   - Summarization Service receives wake-up events from RabbitMQ
+   - Summarization Service claims jobs through the API leasing endpoints
+   - Summarization Service heartbeats while processing long-running work
    - Summarization Service uses Ollama LLM to generate a summary
    - Summarization Service stores the summary via API
    - Summarization Service publishes a `summary.created` event
@@ -118,21 +118,21 @@ graph TD
 
 This architecture uses a microservices approach with message-based communication through RabbitMQ, allowing for scalable and resilient processing of videos.
 
-## Event-Driven vs. Polling Approaches
+## Event-Driven Wake-Ups and API Leasing
 
 This system uses a combination of two approaches for service communication:
 
-1. **Event-Driven (Push Model)**:
+1. **Event-Driven Wake-Ups**:
 
-   - Services subscribe to specific events via RabbitMQ
-   - When an event occurs, RabbitMQ pushes the notification to all subscribed services
+   - Services subscribe to relevant events via RabbitMQ
+   - RabbitMQ acts as a wake-up signal so workers know when to attempt another claim
    - Example: When a transcription is created, RabbitMQ notifies the Summarization Service
-   - Advantages: Real-time processing, reduced latency, services only act when needed
+   - Advantages: low latency and less idle polling
 
-2. **Polling (Pull Model)**:
-   - Services periodically check the API for pending jobs
-   - The service actively requests information rather than waiting for notifications
-   - Example: Services check for pending jobs at startup to process any jobs that might have been missed
-   - Advantages: Simpler implementation, works as a fallback mechanism
+2. **API Job Leasing**:
+   - Workers atomically claim jobs through the API and extend ownership with heartbeats
+   - PostgreSQL-backed leases prevent multiple workers from processing the same job
+   - Workers can still claim on startup or on a timed fallback when no wake-up event is received
+   - Advantages: race-safe ownership with predictable recovery from stalled workers
 
-Using both approaches provides redundancy and ensures that no jobs are missed, even if a service was temporarily unavailable when an event was published.
+Using both approaches provides low-latency wake-ups without making RabbitMQ the source of truth for job ownership.

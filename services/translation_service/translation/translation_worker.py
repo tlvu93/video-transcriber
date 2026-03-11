@@ -14,18 +14,12 @@ from translation.cache import (
 )
 from translation.translator import detect_language, translate_segments, translate_text
 
-from common.messaging import RabbitMQClient, publish_job_status_changed_event
-
 # Add the project root directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("translation.worker")
-
-# Initialize RabbitMQ client
-rabbitmq_client = RabbitMQClient()
-API_SESSION = requests.Session()
 
 
 def build_translated_content_from_segments(
@@ -49,14 +43,14 @@ def build_translated_content_from_segments(
 
 def get_job_from_api(job_id: str) -> Dict[str, Any]:
     """Get job details from API."""
-    response = API_SESSION.get(f"{API_URL}/translation-jobs/{job_id}")
+    response = requests.get(f"{API_URL}/translation-jobs/{job_id}", timeout=30)
     response.raise_for_status()
     return response.json()
 
 
 def get_transcript_from_api(transcript_id: str) -> Dict[str, Any]:
     """Get transcript details from API."""
-    response = API_SESSION.get(f"{API_URL}/transcripts/{transcript_id}")
+    response = requests.get(f"{API_URL}/transcripts/{transcript_id}", timeout=30)
     response.raise_for_status()
     return response.json()
 
@@ -72,24 +66,16 @@ def create_translation_api(
         "segments": segments,
         "status": "completed",
     }
-    response = API_SESSION.post(f"{API_URL}/translated-transcripts/", json=data)
+    response = requests.post(f"{API_URL}/translated-transcripts/", json=data, timeout=30)
     response.raise_for_status()
     translation = response.json()
-
-    # Publish translation created event
-    try:
-        rabbitmq_client.connect()
-        # TODO: Add event publishing when implemented in common
-        # publish_translation_created_event(rabbitmq_client, str(translation["id"]), str(transcript_id))
-        logger.info(f"Translation created for transcript {transcript_id} in language {language}")
-    except Exception as e:
-        logger.error(f"Error publishing event: {str(e)}")
-
+    logger.info(f"Translation created for transcript {transcript_id} in language {language}")
     return translation
 
 
 def update_job_status_api(
     job_id: str,
+    worker_id: str,
     status: str,
     processing_time: Optional[float] = None,
     error_details: Optional[Dict[str, Any]] = None,
@@ -98,39 +84,55 @@ def update_job_status_api(
     try:
         if status == "completed":
             url = f"{API_URL}/translation-jobs/{job_id}/complete"
-            data = {"status": status, "processing_time_seconds": processing_time}
+            data = {
+                "status": status,
+                "worker_id": worker_id,
+                "processing_time_seconds": processing_time,
+            }
             if error_details is not None:
                 data["error_details"] = error_details
         elif status == "failed":
             url = f"{API_URL}/translation-jobs/{job_id}/fail"
             data = {
                 "status": status,
+                "worker_id": worker_id,
                 "error_details": error_details or {"error": "Unknown error"},
             }
         else:
-            url = f"{API_URL}/translation-jobs/{job_id}/start"
-            data = {}
+            raise ValueError(f"Unsupported translation job status transition: {status}")
 
-        response = API_SESSION.post(url, json=data)
+        response = requests.post(url, json=data, timeout=30)
         response.raise_for_status()
 
-        response.json()
         logger.info(f"Updated translation job {job_id} status to {status}")
-
-        # Publish job status changed event
-        try:
-            rabbitmq_client.connect()
-            publish_job_status_changed_event(rabbitmq_client, "translation", str(job_id), status)
-            logger.info(f"Published job.status.changed event for job {job_id}")
-        except Exception as e:
-            logger.error(f"Error publishing event: {str(e)}")
 
     except Exception as e:
         logger.error(f"Error updating job status: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")
 
 
-def process_translation_job(job_id: str) -> bool:
+def claim_next_translation_job_api(worker_id: str) -> Optional[Dict[str, Any]]:
+    """Claim the next available translation job."""
+    response = requests.post(
+        f"{API_URL}/translation-jobs/claim",
+        json={"worker_id": worker_id},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def heartbeat_translation_job_api(job_id: str, worker_id: str) -> None:
+    """Refresh a translation job lease."""
+    response = requests.post(
+        f"{API_URL}/translation-jobs/{job_id}/heartbeat",
+        json={"worker_id": worker_id},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
+def process_translation_job(job_id: str, worker_id: str) -> bool:
     """
     Process a translation job.
 
@@ -158,16 +160,12 @@ def process_translation_job(job_id: str) -> bool:
             )
             timings["target_language"] = target_language
 
-            # Mark job as started (only on first attempt)
-            if retry_count == 0:
-                update_job_status_api(job_id, "processing")
-
             # Get the transcript from API
             transcript_fetch_started_at = time.perf_counter()
             transcript = get_transcript_from_api(transcript_id)
             if not transcript:
                 error_details = {"error": f"Transcript not found: {transcript_id}"}
-                update_job_status_api(job_id, "failed", error_details=error_details)
+                update_job_status_api(job_id, worker_id, "failed", error_details=error_details)
                 return False
             timings["transcript_fetch_seconds"] = round(
                 time.perf_counter() - transcript_fetch_started_at,
@@ -289,6 +287,7 @@ def process_translation_job(job_id: str) -> bool:
             timings["total_processing_seconds"] = round(processing_time, 3)
             update_job_status_api(
                 job_id,
+                worker_id,
                 "completed",
                 processing_time=processing_time,
                 error_details={"metrics": timings},
@@ -321,21 +320,7 @@ def process_translation_job(job_id: str) -> bool:
                     "retry_count": retry_count,
                     "metrics": timings,
                 }
-                update_job_status_api(job_id, "failed", error_details=error_details)
+                update_job_status_api(job_id, worker_id, "failed", error_details=error_details)
                 return False
 
     return False
-
-
-def get_next_translation_job_api() -> Optional[Dict[str, Any]]:
-    """Get the next pending translation job from the API."""
-    try:
-        response = API_SESSION.get(f"{API_URL}/translation-jobs/next")
-        if response.status_code == 404:
-            # No pending jobs
-            return None
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error getting next translation job: {str(e)}")
-        return None

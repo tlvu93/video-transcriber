@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.12.13-slim
 
 WORKDIR /app
 
@@ -13,17 +13,13 @@ COPY common /app/common
 # Install required packages
 RUN pip install --no-cache-dir -U pip setuptools wheel
 
-# Install common package first
-RUN pip install --no-cache-dir -e /app/common
-
 # Copy the translation service code
 COPY services/translation_service /app/translation_service
 
-# Fix the dependency path in pyproject.toml to point to the correct location in container
-RUN sed -i 's|file://../common|file:///app/common|g' /app/translation_service/pyproject.toml
-
-# Install the translation service with all dependencies from pyproject.toml
-RUN pip install --no-cache-dir -e /app/translation_service
+RUN pip install --no-cache-dir -r /app/common/requirements.lock
+RUN pip install --no-cache-dir -r /app/translation_service/requirements.lock
+RUN pip install --no-cache-dir --no-deps -e /app/common
+RUN pip install --no-cache-dir --no-deps -e /app/translation_service
 
 # Create a .pth file to ensure the common package is in the Python path
 RUN echo "/app" > $(python -c "import site; print(site.getsitepackages()[0])")/app.pth

@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.12.13-slim
 
 WORKDIR /app
 
@@ -16,14 +16,11 @@ COPY services/api_service /app/api_service
 # Install required packages
 RUN pip install --no-cache-dir -U pip setuptools wheel
 
-# Install common package first
-RUN pip install --no-cache-dir -e /app/common
-
-# Fix the dependency path in pyproject.toml to point to the correct location in container
-RUN sed -i 's|file://../common|file:///app/common|g' /app/api_service/pyproject.toml
-
-# Install the API service with all dependencies from pyproject.toml
-RUN pip install --no-cache-dir -e /app/api_service
+# Install locked dependencies, then install the editable packages without re-resolving.
+RUN pip install --no-cache-dir -r /app/common/requirements.lock
+RUN pip install --no-cache-dir -r /app/api_service/requirements.lock
+RUN pip install --no-cache-dir --no-deps -e /app/common
+RUN pip install --no-cache-dir --no-deps -e /app/api_service
 
 # Create a .pth file to ensure the common package is in the Python path
 RUN echo "/app" > $(python -c "import site; print(site.getsitepackages()[0])")/app.pth

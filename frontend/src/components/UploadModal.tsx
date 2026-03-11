@@ -1,6 +1,6 @@
 import { isAxiosError } from "axios";
 import type { ChangeEvent, DragEvent, FormEvent } from "react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { downloadYoutubeVideo, uploadVideo } from "../api/videoService";
 
 type UploadTab = "file" | "youtube";
@@ -24,8 +24,30 @@ export default function UploadModal({
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) {
     return null;
+  }
+
+  let submitLabel = "Import video";
+  if (uploading) {
+    submitLabel = activeTab === "file" ? "Uploading..." : "Importing...";
+  } else if (activeTab === "file") {
+    submitLabel = "Start transcription";
   }
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>): void {
@@ -63,6 +85,7 @@ export default function UploadModal({
         if (!file) {
           throw new Error("No file selected.");
         }
+
         await uploadVideo(file, (progressEvent) => {
           const total = progressEvent.total ?? progressEvent.loaded;
           const percentCompleted = Math.round(
@@ -72,15 +95,15 @@ export default function UploadModal({
         });
       } else {
         if (!youtubeUrl) {
-          throw new Error("Please enter a YouTube URL.");
+          throw new Error("Please enter a video URL.");
         }
-        // For YouTube, we just wait for the backend to finish downloading/queueing
-        setProgress(50); // fake progress just to show it's doing something
+
+        setProgress(50);
         await downloadYoutubeVideo(youtubeUrl);
         setProgress(100);
       }
 
-      onUploadSuccess();
+      await onUploadSuccess();
       onClose();
     } catch (err) {
       console.error("Upload error:", err);
@@ -95,7 +118,7 @@ export default function UploadModal({
       }
     } finally {
       setUploading(false);
-      setTimeout(() => {
+      window.setTimeout(() => {
         setFile(null);
         setYoutubeUrl("");
         setProgress(0);
@@ -104,14 +127,19 @@ export default function UploadModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity">
-      <div className="mx-4 w-full max-w-md overflow-hidden rounded-lg bg-white shadow-xl dark:bg-gray-800">
-        <div className="flex items-center justify-between border-b px-6 py-4 dark:border-gray-700">
-          <h2 className="font-bold text-gray-800 text-xl dark:text-white">
-            Add New Video
-          </h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-md transition-opacity">
+      <div className="panel-elevated w-full max-w-2xl overflow-hidden border-white/10 bg-card/95">
+        <div className="flex items-center justify-between border-white/10 border-b px-6 py-5">
+          <div>
+            <p className="font-semibold text-primary/80 text-xs uppercase tracking-[0.28em]">
+              Intake
+            </p>
+            <h2 className="mt-1 font-semibold text-2xl text-foreground">
+              Add a new video
+            </h2>
+          </div>
           <button
-            className="text-gray-500 hover:text-gray-700 focus:outline-none dark:text-gray-400 dark:hover:text-white"
+            className="rounded-full border border-white/10 bg-white/5 p-2 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
             onClick={onClose}
             type="button"
           >
@@ -132,13 +160,13 @@ export default function UploadModal({
           </button>
         </div>
 
-        <div className="px-6 py-4">
-          <div className="mb-4 flex rounded-lg bg-gray-100 p-1 dark:bg-gray-700">
+        <div className="px-6 py-6">
+          <div className="mb-6 flex rounded-full border border-white/10 bg-white/5 p-1">
             <button
-              className={`flex-1 rounded-md py-2 font-medium text-sm transition-colors ${
+              className={`flex-1 rounded-full px-4 py-2.5 font-medium text-sm transition-colors ${
                 activeTab === "file"
-                  ? "bg-white text-gray-800 shadow dark:bg-gray-600 dark:text-white"
-                  : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  ? "bg-primary text-primary-foreground shadow-glow"
+                  : "text-muted-foreground hover:text-foreground"
               }`}
               onClick={() => setActiveTab("file")}
               type="button"
@@ -146,10 +174,10 @@ export default function UploadModal({
               Upload File
             </button>
             <button
-              className={`flex-1 rounded-md py-2 font-medium text-sm transition-colors ${
+              className={`flex-1 rounded-full px-4 py-2.5 font-medium text-sm transition-colors ${
                 activeTab === "youtube"
-                  ? "bg-white text-gray-800 shadow dark:bg-gray-600 dark:text-white"
-                  : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  ? "bg-primary text-primary-foreground shadow-glow"
+                  : "text-muted-foreground hover:text-foreground"
               }`}
               onClick={() => setActiveTab("youtube")}
               type="button"
@@ -161,20 +189,20 @@ export default function UploadModal({
           <form onSubmit={handleSubmit}>
             {activeTab === "file" ? (
               <label
-                className={`mt-4 flex justify-center rounded-md border-2 border-dashed px-6 pt-5 pb-6 transition-colors ${
+                className={`mt-4 block w-full cursor-pointer rounded-[1.5rem] border border-dashed px-6 pt-5 pb-6 transition-colors ${
                   file
-                    ? "border-blue-500 bg-blue-50 dark:bg-blue-900/10"
-                    : "border-gray-300 hover:border-blue-400 dark:border-gray-600 dark:hover:border-blue-500"
-                } block w-full cursor-pointer`}
+                    ? "border-primary/60 bg-primary/10"
+                    : "border-white/15 bg-white/4 hover:border-primary/40 hover:bg-white/6"
+                }`}
                 htmlFor="fileInput"
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={handleDrop}
               >
-                <div className="space-y-1 text-center">
+                <div className="flex min-h-[19rem] items-center justify-center text-center">
                   {file ? (
                     <div>
                       <svg
-                        className="mx-auto h-12 w-12 text-blue-500"
+                        className="mx-auto h-12 w-12 text-primary"
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -187,14 +215,14 @@ export default function UploadModal({
                           strokeWidth={2}
                         />
                       </svg>
-                      <p className="mt-2 font-medium text-gray-600 text-sm dark:text-gray-300">
+                      <p className="mt-3 font-medium text-foreground text-sm">
                         {file.name}
                       </p>
-                      <p className="text-gray-500 text-xs dark:text-gray-400">
+                      <p className="text-muted-foreground text-xs">
                         ({(file.size / (1024 * 1024)).toFixed(2)} MB)
                       </p>
                       <button
-                        className="mt-3 text-red-500 text-sm transition hover:text-red-700"
+                        className="mt-4 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
@@ -206,10 +234,10 @@ export default function UploadModal({
                       </button>
                     </div>
                   ) : (
-                    <>
+                    <div>
                       <svg
                         aria-hidden="true"
-                        className="mx-auto h-12 w-12 text-gray-400"
+                        className="mx-auto h-14 w-14 text-primary/80"
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 48 48"
@@ -222,8 +250,11 @@ export default function UploadModal({
                           strokeWidth="2"
                         />
                       </svg>
-                      <div className="flex justify-center text-gray-600 text-sm dark:text-gray-300">
-                        <span className="relative rounded-md font-medium text-blue-600 focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 focus-within:ring-offset-2 hover:text-blue-500 dark:text-blue-400">
+                      <p className="mt-5 text-center font-medium text-foreground">
+                        Drag footage here or browse locally
+                      </p>
+                      <div className="mt-2 flex justify-center text-muted-foreground text-sm">
+                        <span className="relative rounded-md font-medium text-primary focus-within:outline-none focus-within:ring-2 focus-within:ring-primary/40">
                           <span>Upload a video</span>
                           <input
                             accept="video/*"
@@ -236,23 +267,23 @@ export default function UploadModal({
                         </span>
                         <p className="pl-1">or drag and drop</p>
                       </div>
-                      <p className="text-gray-500 text-xs dark:text-gray-400">
-                        MP4, WEBM, MKV up to 500MB
+                      <p className="mt-4 text-muted-foreground text-xs">
+                        MP4, WEBM, MKV and other common formats up to 500MB
                       </p>
-                    </>
+                    </div>
                   )}
                 </div>
               </label>
             ) : (
-              <div className="mt-4">
+              <div className="mt-4 rounded-[1.5rem] border border-white/10 bg-white/4 p-5">
                 <label
-                  className="mb-2 block font-medium text-gray-700 text-sm dark:text-gray-300"
+                  className="mb-2 block font-medium text-foreground text-sm"
                   htmlFor="youtubeUrl"
                 >
                   Video URL (Vimeo, Twitter, Reddit, etc.)
                 </label>
                 <input
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                  className="w-full rounded-2xl border border-white/10 bg-background/80 px-4 py-3 text-foreground shadow-sm outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/30"
                   id="youtubeUrl"
                   onChange={(event) => setYoutubeUrl(event.target.value)}
                   placeholder="https://vimeo.com/12345678"
@@ -260,57 +291,48 @@ export default function UploadModal({
                   type="url"
                   value={youtubeUrl}
                 />
-                <p className="mt-2 text-gray-500 text-xs dark:text-gray-400">
-                  The video will be downloaded directly by the server and
-                  processed. Note: YouTube links may be unstable due to bot
-                  protection.
+                <p className="mt-3 text-muted-foreground text-sm">
+                  Paste a direct video URL or supported media page and we will
+                  queue it for processing.
                 </p>
               </div>
             )}
 
-            {error && (
-              <div className="mt-4 text-red-600 text-sm dark:text-red-400">
-                {error}
+            {uploading && (
+              <div className="mt-5">
+                <div className="overflow-hidden rounded-full bg-white/10 text-xs">
+                  <div
+                    className="bg-primary px-2 py-1 text-center font-medium text-primary-foreground transition-all"
+                    style={{ width: `${progress}%` }}
+                  >
+                    {progress}%
+                  </div>
+                </div>
               </div>
             )}
 
-            {uploading && (
-              <div className="mt-4">
-                <div className="mb-1 flex justify-between text-gray-600 text-xs dark:text-gray-400">
-                  <span>
-                    {activeTab === "file"
-                      ? "Uploading..."
-                      : "Processing URL..."}
-                  </span>
-                  <span>{progress}%</span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700">
-                  <div
-                    className="h-2 rounded-full bg-blue-600 transition-all duration-300"
-                    style={{ width: `${progress}%` }}
-                  />
-                </div>
+            {error && (
+              <div className="mt-5 rounded-2xl border border-destructive/20 bg-destructive/10 p-4 text-destructive text-sm">
+                {error}
               </div>
             )}
 
             <div className="mt-6 flex justify-end space-x-3">
               <button
-                className="rounded-md border border-gray-300 bg-white px-4 py-2 font-medium text-gray-700 text-sm shadow-sm hover:bg-gray-50 focus:outline-none dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                className="rounded-full border border-white/10 bg-white/5 px-5 py-3 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
                 onClick={onClose}
                 type="button"
               >
                 Cancel
               </button>
               <button
-                className="rounded-md border border-transparent bg-blue-600 px-4 py-2 font-medium text-sm text-white shadow-sm hover:bg-blue-700 focus:outline-none disabled:cursor-not-allowed disabled:bg-blue-400"
+                className="rounded-full bg-primary px-5 py-3 font-medium text-primary-foreground transition hover:bg-warning disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={
-                  uploading ||
-                  (activeTab === "file" && !file) ||
-                  (activeTab === "youtube" && !youtubeUrl)
+                  uploading || (activeTab === "file" ? !file : !youtubeUrl)
                 }
                 type="submit"
               >
-                {uploading ? "Processing..." : "Add Video"}
+                {submitLabel}
               </button>
             </div>
           </form>

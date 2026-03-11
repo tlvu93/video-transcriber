@@ -2,14 +2,23 @@ import hashlib
 import logging
 import os
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Optional
 
 import requests
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
-from watcher.config import API_URL, VIDEO_DIRS
+from watcher.config import (
+    API_TIMEOUT_SECONDS,
+    API_URL,
+    FILE_STABILITY_CHECK_INTERVAL_SECONDS,
+    FILE_STABILITY_MAX_WAIT_SECONDS,
+    FILE_STABILITY_REQUIRED_CHECKS,
+    VIDEO_DIRS,
+)
 
 from common.messaging import RabbitMQClient, publish_video_created_event
 
@@ -34,15 +43,43 @@ def calculate_file_hash(file_path):
     return hash_md5.hexdigest()
 
 
+def wait_for_file_stability(file_path: str) -> bool:
+    """Wait until a file stops changing size before registering it."""
+    stable_checks = 0
+    last_size: Optional[int] = None
+    deadline = time.time() + FILE_STABILITY_MAX_WAIT_SECONDS
+
+    while time.time() < deadline:
+        try:
+            current_size = os.path.getsize(file_path)
+        except OSError:
+            logger.info("File disappeared while waiting for stability: %s", file_path)
+            return False
+
+        if current_size == last_size and current_size > 0:
+            stable_checks += 1
+            if stable_checks >= FILE_STABILITY_REQUIRED_CHECKS:
+                return True
+        else:
+            stable_checks = 0
+            last_size = current_size
+
+        time.sleep(FILE_STABILITY_CHECK_INTERVAL_SECONDS)
+
+    logger.warning("Timed out waiting for file stability: %s", file_path)
+    return False
+
+
 def process_video_file(file_path):
     """Process a video file and add it to the database via API."""
     try:
+        storage_path = os.path.abspath(file_path)
         # Get the filename from the path
-        filename = os.path.basename(file_path)
+        filename = os.path.basename(storage_path)
         logger.info(f"Processing video file: {filename}")
 
         # Calculate file hash
-        file_hash = calculate_file_hash(file_path)
+        file_hash = calculate_file_hash(storage_path)
         logger.info(f"File hash: {file_hash}")
 
         # Check if the video already exists in the database via API
@@ -50,7 +87,7 @@ def process_video_file(file_path):
         check_data = {"filename": filename, "file_hash": file_hash}
 
         try:
-            response = requests.post(check_url, json=check_data)
+            response = requests.post(check_url, json=check_data, timeout=API_TIMEOUT_SECONDS)
             response.raise_for_status()
 
             existing_video = response.json()
@@ -66,11 +103,12 @@ def process_video_file(file_path):
         register_data = {
             "filename": filename,
             "file_hash": file_hash,
+            "storage_path": storage_path,
             "video_metadata": {"file_hash": file_hash},
         }
 
         try:
-            response = requests.post(register_url, json=register_data)
+            response = requests.post(register_url, json=register_data, timeout=API_TIMEOUT_SECONDS)
             response.raise_for_status()
 
             video = response.json()
@@ -80,7 +118,7 @@ def process_video_file(file_path):
             job_url = f"{API_URL}/transcription-jobs/"
             job_data = {"video_id": video["id"]}
 
-            job_response = requests.post(job_url, json=job_data)
+            job_response = requests.post(job_url, json=job_data, timeout=API_TIMEOUT_SECONDS)
             job_response.raise_for_status()
 
             job = job_response.json()
@@ -103,23 +141,48 @@ def process_video_file(file_path):
 
 
 class VideoFolderHandler(FileSystemEventHandler):
+    def __init__(self):
+        super().__init__()
+        self._scheduled_paths: set[str] = set()
+        self._lock = threading.Lock()
+
+    def schedule_video(self, file_path: str) -> None:
+        normalized_path = os.path.abspath(file_path)
+
+        with self._lock:
+            if normalized_path in self._scheduled_paths:
+                logger.debug("File is already queued for watcher processing: %s", normalized_path)
+                return
+            self._scheduled_paths.add(normalized_path)
+
+        thread = threading.Thread(
+            target=self._process_when_stable,
+            args=(normalized_path,),
+            daemon=True,
+            name=f"watcher-stability-{os.path.basename(normalized_path)}",
+        )
+        thread.start()
+
+    def _process_when_stable(self, file_path: str) -> None:
+        try:
+            if wait_for_file_stability(file_path):
+                process_video_file(file_path)
+        except Exception as e:
+            logger.error(f"❌ Error in processing after file event: {str(e)}")
+            logger.error(f"Exception traceback: {traceback.format_exc()}")
+        finally:
+            with self._lock:
+                self._scheduled_paths.discard(file_path)
+
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith((".mp4", ".mov", ".mkv")):
             logger.info(f"🔍 Detected new video file: {event.src_path}")
-            try:
-                process_video_file(event.src_path)
-            except Exception as e:
-                logger.error(f"❌ Error in processing after file creation: {str(e)}")
-                logger.error(f"Exception traceback: {traceback.format_exc()}")
+            self.schedule_video(event.src_path)
 
     def on_modified(self, event):
         if not event.is_directory and event.src_path.endswith((".mp4", ".mov", ".mkv")):
             logger.info(f"🔄 Detected modified video file: {event.src_path}")
-            try:
-                process_video_file(event.src_path)
-            except Exception as e:
-                logger.error(f"❌ Error in processing after file modification: {str(e)}")
-                logger.error(f"Exception traceback: {traceback.format_exc()}")
+            self.schedule_video(event.src_path)
 
 
 def ensure_directories():
@@ -148,7 +211,8 @@ def process_existing_files():
                     if filename.endswith((".mp4", ".mov", ".mkv")):
                         file_path = os.path.join(root, filename)
                         logger.info(f"Found existing video file: {file_path}")
-                        process_video_file(file_path)
+                        if wait_for_file_stability(file_path):
+                            process_video_file(file_path)
         except Exception as e:
             logger.error(f"❌ Error processing existing files in {video_dir}: {str(e)}")
             logger.error(f"Exception traceback: {traceback.format_exc()}")
@@ -159,7 +223,7 @@ def check_api_connection():
     logger.info(f"Checking connection to API service at {API_URL}")
 
     try:
-        response = requests.get(f"{API_URL}/")
+        response = requests.get(f"{API_URL}/", timeout=API_TIMEOUT_SECONDS)
         response.raise_for_status()
         logger.info("API service is available")
         return True

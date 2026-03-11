@@ -1,44 +1,115 @@
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import type { Video } from "../types/domain";
-import { getStatusColor } from "../utils/status";
+import { fetchTranslatedTranscripts } from "../api/videoService";
+import type { Transcript, Video } from "../types/domain";
+import {
+  formatDuration,
+  formatFullDate,
+  humanizeStatus,
+} from "../utils/formatters";
+import { getVideoStatusMeta } from "../utils/status";
+import { normalizeTranslatedTranscript } from "../utils/transcript";
 
 interface VideoMetadataProps {
   onRetryTranscription?: (() => Promise<unknown>) | null;
+  transcript?: Transcript | null;
   video: Video | null;
+}
+
+function MetadataItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
+      <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
+        {label}
+      </p>
+      <p className="mt-2 text-foreground text-sm">{value}</p>
+    </div>
+  );
+}
+
+function getSpeakerIds(transcript: Transcript | null | undefined) {
+  const speakerIds: string[] = [];
+
+  for (const segment of transcript?.segments ?? []) {
+    if (segment.speaker && !speakerIds.includes(segment.speaker)) {
+      speakerIds.push(segment.speaker);
+    }
+  }
+
+  return speakerIds;
+}
+
+function formatLanguage(languageCode: string | null | undefined) {
+  return languageCode ? languageCode.toUpperCase() : "Unknown";
+}
+
+function formatCount(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 export default function VideoMetadata({
   video,
   onRetryTranscription,
+  transcript,
 }: VideoMetadataProps) {
   const [retrying, setRetrying] = useState(false);
+  const transcriptId = transcript?.id ?? "";
+  const translatedTranscriptsQuery = useQuery({
+    queryKey: ["translations", transcriptId],
+    queryFn: async () => {
+      if (!transcriptId) {
+        return [];
+      }
+
+      const translations = await fetchTranslatedTranscripts(transcriptId);
+      return translations
+        .map((translation) => normalizeTranslatedTranscript(translation))
+        .filter((translation): translation is NonNullable<typeof translation> =>
+          Boolean(translation)
+        );
+    },
+    enabled: Boolean(transcriptId),
+  });
+  const speakerIds = getSpeakerIds(transcript);
+  const translatedLanguages = (translatedTranscriptsQuery.data ?? []).map(
+    (translation) => translation.language.toUpperCase()
+  );
+
   if (!video) {
-    return <div>Loading metadata...</div>;
+    return (
+      <div className="panel p-5">
+        <p className="text-muted-foreground">Loading metadata...</p>
+      </div>
+    );
   }
 
-  const formattedDate = video.created_at
-    ? new Date(video.created_at).toLocaleString()
-    : "Unknown date";
-
-  function formatDuration(seconds?: number): string {
-    if (!seconds) {
-      return "Unknown";
-    }
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const remainingSeconds = Math.floor(seconds % 60);
-
-    if (hours > 0) {
-      return `${hours}:${minutes.toString().padStart(2, "0")}:${remainingSeconds
-        .toString()
-        .padStart(2, "0")}`;
-    }
-    return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
-  }
-
-  const duration = video.video_metadata?.duration
-    ? formatDuration(video.video_metadata.duration)
-    : "Unknown";
+  const statusMeta = getVideoStatusMeta(video.status);
+  const detailItems = [
+    {
+      label: "Uploaded",
+      value: formatFullDate(video.created_at),
+    },
+    {
+      label: "Duration",
+      value: formatDuration(video.video_metadata?.duration),
+    },
+    {
+      label: "Language",
+      value: formatLanguage(transcript?.language_code),
+    },
+    {
+      label: "Segments",
+      value: `${transcript?.segments?.length ?? 0}`,
+    },
+    {
+      label: "Speakers",
+      value: speakerIds.length > 0 ? `${speakerIds.length}` : "None",
+    },
+    {
+      label: "Fingerprint",
+      value: (video.file_hash ?? video.id).slice(0, 12),
+    },
+  ];
 
   async function handleRetry(): Promise<void> {
     if (!onRetryTranscription || retrying) {
@@ -56,49 +127,107 @@ export default function VideoMetadata({
   }
 
   return (
-    <div className="mb-4 rounded-lg bg-white p-4 shadow-md dark:bg-gray-800">
-      <div className="flex items-start justify-between">
-        <h2 className="mb-2 font-bold text-gray-800 text-xl dark:text-white">
-          {video.filename}
-        </h2>
+    <section className="panel overflow-hidden">
+      <div className="border-white/10 border-b px-5 py-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className="font-semibold text-primary/80 text-xs uppercase tracking-[0.24em]">
+              Video details
+            </p>
+            <h2 className="mt-2 font-semibold text-2xl text-foreground tracking-tight">
+              {video.filename}
+            </h2>
+          </div>
 
-        {onRetryTranscription && (
-          <button
-            className="rounded bg-blue-500 px-3 py-1 font-semibold text-sm text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={retrying}
-            onClick={handleRetry}
-            type="button"
-          >
-            {retrying ? (
-              <>
-                <span className="mr-1 inline-block animate-spin">⟳</span>
-                Retrying...
-              </>
-            ) : (
-              "Retry Transcription"
+          <div className="flex flex-wrap items-center gap-3">
+            <span className={`status-chip ${statusMeta.badgeClassName}`}>
+              <span className="h-2 w-2 rounded-full bg-current" />
+              {humanizeStatus(video.status)}
+            </span>
+
+            {onRetryTranscription && (
+              <button
+                className="rounded-full border border-primary/25 bg-primary/10 px-4 py-2 font-medium text-primary text-sm transition hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={retrying}
+                onClick={handleRetry}
+                type="button"
+              >
+                {retrying ? "Retrying..." : "Retry transcription"}
+              </button>
             )}
-          </button>
-        )}
+          </div>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 text-gray-600 text-sm dark:text-gray-300">
-        <div>
-          <span className="font-semibold">Upload Date:</span> {formattedDate}
-        </div>
-        <div>
-          <span className="font-semibold">Duration:</span> {duration}
-        </div>
-        <div>
-          <span className="font-semibold">Status:</span>{" "}
-          <span className={`font-medium ${getStatusColor(video.status)}`}>
-            {video.status}
-          </span>
-        </div>
-        <div>
-          <span className="font-semibold">File ID:</span>{" "}
-          {video.id.substring(0, 8)}...
-        </div>
+      <div className="grid gap-3 p-5 sm:grid-cols-2">
+        {detailItems.map((item) => (
+          <MetadataItem
+            key={item.label}
+            label={item.label}
+            value={item.value}
+          />
+        ))}
       </div>
-    </div>
+
+      {speakerIds.length > 0 && (
+        <div className="border-white/10 border-t px-5 py-4">
+          <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
+            Speakers
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {speakerIds.map((speakerId, index) => (
+              <span
+                className="rounded-full border border-white/10 bg-white/5 px-3 py-1 font-medium text-foreground text-xs"
+                key={speakerId}
+              >
+                Speaker {index + 1}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {transcriptId && (
+        <div className="border-white/10 border-t px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
+              Available translations
+            </p>
+            <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 font-medium text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
+              {translatedLanguages.length > 0
+                ? formatCount(translatedLanguages.length, "language")
+                : "None yet"}
+            </span>
+          </div>
+
+          {translatedTranscriptsQuery.isPending && (
+            <p className="mt-3 text-muted-foreground text-sm">
+              Checking translation availability...
+            </p>
+          )}
+
+          {!translatedTranscriptsQuery.isPending &&
+            translatedLanguages.length === 0 && (
+              <p className="mt-3 text-muted-foreground text-sm">
+                Request a translated transcript from the transcript panel when
+                you need another language.
+              </p>
+            )}
+
+          {translatedLanguages.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {translatedLanguages.map((language) => (
+                <span
+                  className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1 font-medium text-primary text-xs"
+                  key={language}
+                >
+                  {language}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }

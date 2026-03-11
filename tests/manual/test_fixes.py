@@ -8,8 +8,9 @@ import sys
 from pathlib import Path
 
 # Add the services to the path
-sys.path.insert(0, str(Path(__file__).parent / "services" / "translation_service"))
-sys.path.insert(0, str(Path(__file__).parent / "services" / "transcription_service"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "services" / "translation_service"))
+sys.path.insert(0, str(REPO_ROOT / "services" / "transcription_service"))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")

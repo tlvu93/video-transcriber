@@ -16,7 +16,12 @@ VIDEO_DIR = DEFAULT_VIDEO_DIR
 # Database
 DB_PATH = os.path.join(DATA_DIR, "db", "video_transcriber.db")
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DB_PATH}")
+IS_POSTGRES = DATABASE_URL.startswith("postgresql")
+
+# Queue leasing
+JOB_LEASE_DURATION_SECONDS = int(os.environ.get("JOB_LEASE_DURATION_SECONDS", "600"))
+JOB_HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("JOB_HEARTBEAT_INTERVAL_SECONDS", "60"))
 
 # LLM settings
 LLM_HOST = os.environ.get("LLM_HOST", "http://localhost:11434/api/generate")
-LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-r1")
+LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3:14b")

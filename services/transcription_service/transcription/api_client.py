@@ -6,8 +6,6 @@ from typing import Any, Dict, List, Optional
 import requests
 from transcription.config import API_URL, VIDEO_DIR
 
-from common.messaging import RabbitMQClient, publish_job_status_changed_event, publish_transcription_created_event
-
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("api_client")
@@ -60,6 +58,21 @@ def get_next_transcription_job_api() -> Optional[Dict[str, Any]]:
             return None
         logger.error(f"Error getting next transcription job: {str(e)}")
         raise
+
+
+def claim_next_transcription_job_api(worker_id: str) -> Optional[Dict[str, Any]]:
+    """Atomically claim the next transcription job for the current worker."""
+    result = api_request("post", f"{API_URL}/transcription-jobs/claim", json={"worker_id": worker_id})
+    return result or None
+
+
+def heartbeat_transcription_job_api(job_id: str, worker_id: str) -> Optional[Dict[str, Any]]:
+    """Refresh the lease for an active transcription job."""
+    return api_request(
+        "post",
+        f"{API_URL}/transcription-jobs/{job_id}/heartbeat",
+        json={"worker_id": worker_id},
+    )
 
 
 def get_all_pending_transcription_jobs_api() -> List[Dict[str, Any]]:
@@ -118,24 +131,13 @@ def create_transcript_api(
         transcript = response
         logger.info(f"Created transcript {transcript['id']} for video {video_id}")
 
-        # Create a summarization job for the transcript via API
+        # Keep the current product behavior: transcription completion enqueues summarization.
         job_url = f"{API_URL}/summarization-jobs/"
         job_data = {"transcript_id": transcript["id"]}
 
         job_response = api_request("post", job_url, json=job_data)
         job = job_response
         logger.info(f"Created summarization job {job['id']} for transcript {transcript['id']} via API")
-
-        # Publish transcript created event with connection management
-        try:
-            rabbitmq_client = RabbitMQClient()
-            rabbitmq_client.connect()
-            publish_transcription_created_event(rabbitmq_client, str(transcript["id"]), str(video_id))
-            rabbitmq_client.close()
-            logger.info(f"Published transcription.created event for transcript {transcript['id']}")
-        except Exception as e:
-            logger.error(f"Error publishing event: {str(e)}")
-            logger.info("Continuing with processing as summarization job was already created via API")
 
         return transcript
 
@@ -145,39 +147,51 @@ def create_transcript_api(
         return None
 
 
-def update_job_status_api(
-    job_id: str, status: str, processing_time: Optional[float] = None, error_details: Optional[Dict[str, Any]] = None
+def complete_transcription_job_api(
+    job_id: str,
+    worker_id: str,
+    processing_time: Optional[float] = None,
+    error_details: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Update the status of a transcription job via the API."""
+    """Mark a leased transcription job as completed."""
     try:
-        if status == "completed":
-            url = f"{API_URL}/transcription-jobs/{job_id}/complete"
-            data = {"status": status, "processing_time_seconds": processing_time}
-        elif status == "failed":
-            url = f"{API_URL}/transcription-jobs/{job_id}/fail"
-            data = {
-                "status": status,
-                "error_details": error_details or {"error": "Unknown error"},
-            }
-        else:
-            url = f"{API_URL}/transcription-jobs/{job_id}/start"
-            data = {}
+        data: Dict[str, Any] = {
+            "status": "completed",
+            "worker_id": worker_id,
+            "processing_time_seconds": processing_time,
+        }
+        if error_details is not None:
+            data["error_details"] = error_details
 
-        job = api_request("post", url, json=data)
-        logger.info(f"Updated transcription job {job_id} status to {status}")
-
-        # Publish job status changed event with connection management
-        try:
-            rabbitmq_client = RabbitMQClient()
-            rabbitmq_client.connect()
-            publish_job_status_changed_event(rabbitmq_client, "transcription", str(job_id), status)
-            rabbitmq_client.close()
-            logger.info(f"Published job.status.changed event for job {job_id}")
-        except Exception as e:
-            logger.error(f"Error publishing event: {str(e)}")
+        job = api_request("post", f"{API_URL}/transcription-jobs/{job_id}/complete", json=data)
+        logger.info(f"Updated transcription job {job_id} status to completed")
 
         return job
 
+    except Exception as e:
+        logger.error(f"Error updating job status: {str(e)}")
+        logger.error(f"Exception traceback: {traceback.format_exc()}")
+        return None
+
+
+def fail_transcription_job_api(
+    job_id: str,
+    worker_id: str,
+    error_details: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Mark a leased transcription job as failed."""
+    try:
+        job = api_request(
+            "post",
+            f"{API_URL}/transcription-jobs/{job_id}/fail",
+            json={
+                "status": "failed",
+                "worker_id": worker_id,
+                "error_details": error_details or {"error": "Unknown error"},
+            },
+        )
+        logger.info(f"Updated transcription job {job_id} status to failed")
+        return job
     except Exception as e:
         logger.error(f"Error updating job status: {str(e)}")
         logger.error(f"Exception traceback: {traceback.format_exc()}")

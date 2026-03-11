@@ -59,7 +59,7 @@ function GlobeIcon() {
 function CheckMarkIcon() {
   return (
     <svg
-      className="h-5 w-5 text-green-500"
+      className="h-5 w-5 text-emerald-300"
       fill="none"
       stroke="currentColor"
       strokeWidth={1.5}
@@ -79,7 +79,7 @@ function CheckMarkIcon() {
 function LoadingIcon() {
   return (
     <svg
-      className="h-5 w-5 animate-spin text-blue-500"
+      className="h-5 w-5 animate-spin text-primary"
       fill="none"
       viewBox="0 0 24 24"
       xmlns="http://www.w3.org/2000/svg"
@@ -155,6 +155,28 @@ function getTranslationStrategyLabel(
     default:
       return null;
   }
+}
+
+function getLanguageConfig(languageCode: string | null | undefined) {
+  return AVAILABLE_LANGUAGES.find((language) => language.code === languageCode);
+}
+
+function getLanguageFlag(languageCode: string | null | undefined): string {
+  return getLanguageConfig(languageCode)?.flag ?? "🌐";
+}
+
+function countUniqueSpeakers(
+  segments: TranscriptSegmentType[] | null | undefined
+): number {
+  const speakerIds = new Set<string>();
+
+  for (const segment of segments ?? []) {
+    if (segment.speaker) {
+      speakerIds.add(segment.speaker);
+    }
+  }
+
+  return speakerIds.size;
 }
 
 function buildSpeakerStorageKey(transcriptId: string): string {
@@ -264,6 +286,8 @@ export default function TranscriptList({
 }: TranscriptListProps) {
   const queryClient = useQueryClient();
   const segmentRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const translateMenuRef = useRef<HTMLDivElement | null>(null);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
   const transcriptId = transcript?.id ?? "";
   const videoId = transcript?.video_id ?? "";
   const [showTimestamps, setShowTimestamps] = useState(true);
@@ -357,10 +381,9 @@ export default function TranscriptList({
   const selectedTranslationMetrics = getTranslationMetrics(
     selectedTranslationJob
   );
-  const currentTranscriptData =
-    selectedLanguage && translations[selectedLanguage]
-      ? translations[selectedLanguage]
-      : transcript;
+  const currentTranscriptData = selectedLanguage
+    ? (translations[selectedLanguage] ?? null)
+    : transcript;
   const currentTranscriptContent = currentTranscriptData?.content ?? "";
   const currentSegments = currentTranscriptData?.segments ?? [];
   const filteredSegments = searchQuery
@@ -374,6 +397,15 @@ export default function TranscriptList({
     activeTranslationJobs.some(
       (job) => job.target_language === selectedLanguage
     );
+  const translatedLanguageCodes = AVAILABLE_LANGUAGES.filter(
+    (language) => !!translations[language.code]
+  ).map((language) => language.code);
+  const pendingLanguageCodes = AVAILABLE_LANGUAGES.filter(
+    (language) =>
+      activeTranslationJobs.some(
+        (job) => job.target_language === language.code
+      ) && !translations[language.code]
+  ).map((language) => language.code);
 
   useEffect(() => {
     if (!transcriptId) {
@@ -397,12 +429,67 @@ export default function TranscriptList({
     }
   }, [currentTranscriptData, onDisplayedTranscriptChange]);
 
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent): void {
+      if (!(event.target instanceof Node)) {
+        return;
+      }
+
+      if (
+        translateMenuOpen &&
+        translateMenuRef.current &&
+        !translateMenuRef.current.contains(event.target)
+      ) {
+        setTranslateMenuOpen(false);
+      }
+
+      if (
+        menuOpen &&
+        exportMenuRef.current &&
+        !exportMenuRef.current.contains(event.target)
+      ) {
+        setMenuOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      setTranslateMenuOpen(false);
+      setMenuOpen(false);
+
+      if (showTranslationModal) {
+        setShowTranslationModal(false);
+        setPendingLanguage(null);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [menuOpen, showTranslationModal, translateMenuOpen]);
+
   if (!transcript) {
     return (
-      <div className="rounded-lg bg-white p-4 shadow-md dark:bg-gray-800">
-        <p className="py-4 text-center text-gray-500 dark:text-gray-400">
-          No transcript available.
-        </p>
+      <div className="panel flex h-full min-h-[24rem] items-center justify-center p-6">
+        <div className="max-w-sm text-center">
+          <p className="font-semibold text-primary/80 text-xs uppercase tracking-[0.24em]">
+            Transcript
+          </p>
+          <h3 className="mt-2 font-semibold text-foreground text-xl">
+            Waiting for transcript data
+          </h3>
+          <p className="mt-3 text-muted-foreground leading-6">
+            The transcript editor will unlock here as soon as the transcription
+            step finishes.
+          </p>
+        </div>
       </div>
     );
   }
@@ -577,6 +664,23 @@ export default function TranscriptList({
   const selectedTranslationStrategyLabel = getTranslationStrategyLabel(
     selectedTranslationMetrics?.translation_strategy
   );
+  const activePlayheadLabel =
+    activeSegment && currentTime >= 0
+      ? formatTimeForDownload(activeSegment.start_time)
+      : "No active cue";
+  const visibleSegmentCount = filteredSegments.length;
+  const speakerCount = countUniqueSpeakers(currentSegments);
+  const transcriptHeading = selectedLanguage
+    ? `Transcript (${getLanguageName(selectedLanguage)})`
+    : "Transcript";
+  const transcriptDescription = selectedLanguage
+    ? `Viewing the ${getLanguageName(selectedLanguage)} translation.`
+    : `Viewing the original ${getLanguageName(transcript.language_code)} transcript.`;
+  const showNoSearchMatches =
+    !isLoadingSelectedTranslation &&
+    currentSegments.length > 0 &&
+    searchQuery.trim().length > 0 &&
+    filteredSegments.length === 0;
 
   function scrollToCurrentSegment(): void {
     if (!activeSegment) {
@@ -591,207 +695,339 @@ export default function TranscriptList({
   }
 
   return (
-    <div className="rounded-lg bg-white p-4 shadow-md dark:bg-gray-800">
-      <div className="mb-4 flex items-center justify-between">
-        <h3 className="font-semibold text-gray-800 text-lg dark:text-white">
-          Transcript{" "}
-          {selectedLanguage
-            ? `(${
-                AVAILABLE_LANGUAGES.find(
-                  (language) => language.code === selectedLanguage
-                )?.name ?? selectedLanguage
-              })`
-            : ""}
-        </h3>
-        <div className="flex items-center space-x-2">
-          <button
-            className="rounded bg-emerald-500 px-3 py-1 text-sm text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={!activeSegment || isLoadingSelectedTranslation}
-            onClick={scrollToCurrentSegment}
-            type="button"
-          >
-            Scroll to Current
-          </button>
-          <div className="relative inline-block text-left">
+    <div className="panel flex h-full flex-col overflow-hidden p-4 sm:p-5">
+      <div className="mb-4 flex flex-col gap-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className="font-semibold text-primary/80 text-xs uppercase tracking-[0.24em]">
+              Transcript
+            </p>
+            <h3 className="mt-2 font-semibold text-foreground text-xl">
+              {transcriptHeading}
+            </h3>
+            <p className="mt-2 text-muted-foreground text-sm">
+              {transcriptDescription} Search, edit, export, and move through the
+              spoken timeline.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              className="flex items-center rounded bg-blue-500 px-3 py-1 text-sm text-white transition-colors hover:bg-blue-600"
-              onClick={() => setTranslateMenuOpen(!translateMenuOpen)}
+              className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 font-medium text-emerald-200 text-sm transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!activeSegment || isLoadingSelectedTranslation}
+              onClick={scrollToCurrentSegment}
               type="button"
             >
-              <GlobeIcon />
-              <span className="ml-2">Translate</span>
+              Scroll to current
             </button>
-            {translateMenuOpen && (
-              <div className="absolute right-0 z-20 mt-2 w-64 origin-top-right rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none dark:bg-gray-700">
-                <div
-                  aria-labelledby="translate-options-menu"
-                  aria-orientation="vertical"
-                  className="py-1"
-                  role="menu"
-                >
-                  <div className="px-4 py-2 font-semibold text-gray-700 text-sm dark:text-gray-200">
-                    Select Language
-                  </div>
-                  {transcript.language_code && (
-                    <button
-                      className={`block w-full px-4 py-2 text-left text-sm ${
-                        selectedLanguage
-                          ? "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-600"
-                          : "bg-gray-100 text-gray-900 dark:bg-gray-600 dark:text-white"
-                      }`}
-                      onClick={() => {
-                        setSelectedLanguage(null);
-                        setTranslateMenuOpen(false);
-                      }}
-                      role="menuitem"
-                      type="button"
-                    >
-                      Show Original ({transcript.language_code.toUpperCase()})
-                    </button>
-                  )}
-                  {AVAILABLE_LANGUAGES.map((language) => {
-                    const isOriginalLanguage =
-                      language.code === transcript.language_code;
-                    const isSelected = selectedLanguage === language.code;
-                    const translationExists = !!translations[language.code];
-                    const hasActiveJob = activeTranslationJobs.some(
-                      (job) => job.target_language === language.code
-                    );
-
-                    return (
+            <div
+              className="relative inline-block text-left"
+              ref={translateMenuRef}
+            >
+              <button
+                className="flex items-center rounded-full border border-primary/25 bg-primary/10 px-4 py-2 font-medium text-primary text-sm transition hover:bg-primary hover:text-primary-foreground"
+                onClick={() => setTranslateMenuOpen(!translateMenuOpen)}
+                type="button"
+              >
+                <GlobeIcon />
+                <span className="ml-2">Translate</span>
+              </button>
+              {translateMenuOpen && (
+                <div className="panel absolute right-0 z-20 mt-2 w-64 origin-top-right rounded-[1.25rem] border-white/10 bg-card/95 p-2 focus:outline-none">
+                  <div
+                    aria-labelledby="translate-options-menu"
+                    aria-orientation="vertical"
+                    className="space-y-1"
+                    role="menu"
+                  >
+                    <div className="px-3 py-2 font-semibold text-foreground text-sm">
+                      Select language
+                    </div>
+                    {transcript.language_code && (
                       <button
-                        className={`block flex w-full items-center justify-between px-4 py-2 text-left text-sm ${
-                          (isSelected && !isOriginalLanguage) ||
-                          (!selectedLanguage && isOriginalLanguage)
-                            ? "bg-gray-100 text-gray-900 dark:bg-gray-600 dark:text-white"
-                            : "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-600"
+                        className={`block w-full rounded-xl px-3 py-2 text-left text-sm transition ${
+                          selectedLanguage
+                            ? "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                            : "bg-white/8 text-foreground"
                         }`}
-                        disabled={isSelected && !isOriginalLanguage}
-                        key={language.code}
                         onClick={() => {
-                          if (isOriginalLanguage) {
-                            setSelectedLanguage(null);
-                            setTranslateMenuOpen(false);
-                            return;
-                          }
-
-                          if (translationExists) {
-                            setSelectedLanguage(language.code);
-                            setTranslateMenuOpen(false);
-                            return;
-                          }
-
-                          setPendingLanguage(language.code);
-                          setShowTranslationModal(true);
+                          setSelectedLanguage(null);
                           setTranslateMenuOpen(false);
                         }}
                         role="menuitem"
                         type="button"
                       >
-                        <span>
-                          {language.flag} {language.name}
-                        </span>
-                        {translationExists &&
-                          language.code !== transcript.language_code && (
-                            <CheckMarkIcon />
-                          )}
-                        {hasActiveJob && <LoadingIcon />}
+                        Show original ({transcript.language_code.toUpperCase()})
                       </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
+                    )}
+                    {AVAILABLE_LANGUAGES.map((language) => {
+                      const isOriginalLanguage =
+                        language.code === transcript.language_code;
+                      const isSelected = selectedLanguage === language.code;
+                      const translationExists = !!translations[language.code];
+                      const hasActiveJob = activeTranslationJobs.some(
+                        (job) => job.target_language === language.code
+                      );
 
-          <div className="relative inline-block text-left">
+                      return (
+                        <button
+                          className={`block flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition ${
+                            (isSelected && !isOriginalLanguage) ||
+                            (!selectedLanguage && isOriginalLanguage)
+                              ? "bg-white/8 text-foreground"
+                              : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                          }`}
+                          disabled={isSelected && !isOriginalLanguage}
+                          key={language.code}
+                          onClick={() => {
+                            if (isOriginalLanguage) {
+                              setSelectedLanguage(null);
+                              setTranslateMenuOpen(false);
+                              return;
+                            }
+
+                            if (translationExists) {
+                              setSelectedLanguage(language.code);
+                              setTranslateMenuOpen(false);
+                              return;
+                            }
+
+                            setPendingLanguage(language.code);
+                            setShowTranslationModal(true);
+                            setTranslateMenuOpen(false);
+                          }}
+                          role="menuitem"
+                          type="button"
+                        >
+                          <span>
+                            {language.flag} {language.name}
+                          </span>
+                          {translationExists &&
+                            language.code !== transcript.language_code && (
+                              <CheckMarkIcon />
+                            )}
+                          {hasActiveJob && <LoadingIcon />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div
+              className="relative inline-block text-left"
+              ref={exportMenuRef}
+            >
+              <button
+                className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
+                onClick={() => setMenuOpen(!menuOpen)}
+                type="button"
+              >
+                Export
+              </button>
+              {menuOpen && (
+                <div className="panel absolute right-0 z-10 mt-2 w-56 origin-top-right rounded-[1.25rem] border-white/10 bg-card/95 p-2 focus:outline-none">
+                  <div
+                    aria-labelledby="options-menu"
+                    aria-orientation="vertical"
+                    className="space-y-1"
+                    role="menu"
+                  >
+                    <div className="px-3 py-2 font-semibold text-foreground text-sm">
+                      Export transcript
+                    </div>
+                    <button
+                      className="block w-full rounded-xl px-3 py-2 text-left text-muted-foreground text-sm transition hover:bg-white/5 hover:text-foreground"
+                      onClick={() => {
+                        handleDownloadTranscript("txt");
+                        setMenuOpen(false);
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      Download as TXT
+                    </button>
+                    <button
+                      className="block w-full rounded-xl px-3 py-2 text-left text-muted-foreground text-sm transition hover:bg-white/5 hover:text-foreground"
+                      onClick={() => {
+                        handleDownloadTranscript("srt");
+                        setMenuOpen(false);
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      Download as SRT
+                    </button>
+                    <button
+                      className="block w-full rounded-xl px-3 py-2 text-left text-muted-foreground text-sm transition hover:bg-white/5 hover:text-foreground"
+                      onClick={() => {
+                        handleDownloadTranscript("vtt");
+                        setMenuOpen(false);
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      Download as VTT
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            className={`rounded-full border px-3 py-2 font-medium text-sm transition ${
+              selectedLanguage === null
+                ? "border-primary/25 bg-primary/10 text-primary"
+                : "border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+            }`}
+            onClick={() => setSelectedLanguage(null)}
+            type="button"
+          >
+            {getLanguageFlag(transcript.language_code)} Original
+          </button>
+
+          {translatedLanguageCodes.map((languageCode) => (
             <button
-              className="rounded bg-gray-200 px-3 py-1 text-gray-700 text-sm transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-              onClick={() => setMenuOpen(!menuOpen)}
+              className={`rounded-full border px-3 py-2 font-medium text-sm transition ${
+                selectedLanguage === languageCode
+                  ? "border-primary/25 bg-primary/10 text-primary"
+                  : "border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+              }`}
+              key={languageCode}
+              onClick={() => setSelectedLanguage(languageCode)}
               type="button"
             >
-              Menu
+              {getLanguageFlag(languageCode)} {getLanguageName(languageCode)}
             </button>
-            {menuOpen && (
-              <div className="absolute right-0 z-10 mt-2 w-56 origin-top-right rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none dark:bg-gray-700">
-                <div
-                  aria-labelledby="options-menu"
-                  aria-orientation="vertical"
-                  className="py-1"
-                  role="menu"
-                >
-                  <div className="px-4 py-2 font-semibold text-gray-700 text-sm dark:text-gray-200">
-                    Category Options
-                  </div>
-                  <button
-                    className="block w-full px-4 py-2 text-left text-gray-700 text-sm hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-600"
-                    onClick={() => setShowTimestamps(!showTimestamps)}
-                    role="menuitem"
-                    type="button"
-                  >
-                    {showTimestamps ? "Hide Timestamps" : "Show Timestamps"}
-                  </button>
-                  <button
-                    className="block w-full px-4 py-2 text-left text-gray-700 text-sm hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-600"
-                    onClick={() => setShowSpeaker(!showSpeaker)}
-                    role="menuitem"
-                    type="button"
-                  >
-                    {showSpeaker ? "Hide Speaker" : "Show Speaker"}
-                  </button>
-                  <hr className="my-1 border-gray-200 dark:border-gray-600" />
-                  <button
-                    className="block w-full px-4 py-2 text-left text-gray-700 text-sm hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-600"
-                    onClick={() => {
-                      handleDownloadTranscript("txt");
-                      setMenuOpen(false);
-                    }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    Download as TXT
-                  </button>
-                  <button
-                    className="block w-full px-4 py-2 text-left text-gray-700 text-sm hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-600"
-                    onClick={() => {
-                      handleDownloadTranscript("srt");
-                      setMenuOpen(false);
-                    }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    Download as SRT
-                  </button>
-                  <button
-                    className="block w-full px-4 py-2 text-left text-gray-700 text-sm hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-600"
-                    onClick={() => {
-                      handleDownloadTranscript("vtt");
-                      setMenuOpen(false);
-                    }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    Download as VTT
-                  </button>
-                </div>
-              </div>
+          ))}
+
+          {pendingLanguageCodes.map((languageCode) => (
+            <span
+              className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 font-medium text-sm ${
+                selectedLanguage === languageCode
+                  ? "border-primary/25 bg-primary/10 text-primary"
+                  : "border-sky-400/20 bg-sky-400/10 text-sky-100"
+              }`}
+              key={languageCode}
+            >
+              <LoadingIcon />
+              {getLanguageFlag(languageCode)} {getLanguageName(languageCode)}
+            </span>
+          ))}
+
+          {translatedLanguageCodes.length === 0 &&
+            pendingLanguageCodes.length === 0 && (
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-muted-foreground text-sm">
+                No translated versions yet
+              </span>
             )}
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
+            <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
+              Visible segments
+            </p>
+            <p className="mt-2 text-foreground text-sm">
+              {visibleSegmentCount}
+              <span className="ml-2 text-muted-foreground">
+                / {currentSegments.length}
+              </span>
+            </p>
           </div>
+
+          <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
+            <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
+              Speakers
+            </p>
+            <p className="mt-2 text-foreground text-sm">
+              {speakerCount > 0 ? speakerCount : "None"}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
+            <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
+              Playhead
+            </p>
+            <p className="mt-2 text-foreground text-sm">
+              {activePlayheadLabel}
+            </p>
+          </div>
+        </div>
+
+        <div className="relative">
+          <svg
+            aria-hidden="true"
+            className="pointer-events-none absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            viewBox="0 0 24 24"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="m21 21-4.35-4.35M18 10.5a7.5 7.5 0 11-15 0 7.5 7.5 0 0115 0z"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          <input
+            className="w-full rounded-full border border-white/10 bg-white/5 py-3 pr-4 pl-11 text-foreground text-sm transition placeholder:text-muted-foreground/80 focus:border-primary/40 focus:bg-white/8 focus:outline-none focus:ring-2 focus:ring-primary/30"
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search transcript..."
+            type="text"
+            value={searchQuery}
+          />
+          {searchQuery && (
+            <button
+              className="absolute top-1/2 right-3 -translate-y-1/2 rounded-full border border-white/10 bg-white/5 px-3 py-1 font-medium text-muted-foreground text-xs transition hover:bg-white/10 hover:text-foreground"
+              onClick={() => setSearchQuery("")}
+              type="button"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            className={`rounded-full border px-3 py-1.5 font-medium text-xs uppercase tracking-[0.18em] transition ${
+              showTimestamps
+                ? "border-primary/25 bg-primary/10 text-primary"
+                : "border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+            }`}
+            onClick={() => setShowTimestamps(!showTimestamps)}
+            type="button"
+          >
+            {showTimestamps ? "Timestamps on" : "Timestamps off"}
+          </button>
+
+          <button
+            className={`rounded-full border px-3 py-1.5 font-medium text-xs uppercase tracking-[0.18em] transition ${
+              showSpeaker
+                ? "border-primary/25 bg-primary/10 text-primary"
+                : "border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+            }`}
+            onClick={() => setShowSpeaker(!showSpeaker)}
+            type="button"
+          >
+            {showSpeaker ? "Speakers on" : "Speakers off"}
+          </button>
+
+          {searchQuery.trim() && (
+            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-muted-foreground text-xs uppercase tracking-[0.18em]">
+              {visibleSegmentCount} result{visibleSegmentCount === 1 ? "" : "s"}
+            </span>
+          )}
         </div>
       </div>
 
-      <div className="mb-4">
-        <input
-          className="w-full rounded-md border border-gray-300 bg-white p-2 text-gray-800 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
-          onChange={(event) => setSearchQuery(event.target.value)}
-          placeholder="Search transcript..."
-          type="text"
-          value={searchQuery}
-        />
-      </div>
-
       {selectedLanguage && selectedTranslationJob && (
-        <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 p-3 text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/40 dark:text-sky-100">
+        <div className="mb-4 rounded-[1.25rem] border border-sky-400/20 bg-sky-400/10 p-4 text-sky-100">
           <div className="flex flex-wrap items-center gap-2">
             <p className="font-semibold">
               {selectedTranslationJob.status === "completed"
@@ -799,17 +1035,17 @@ export default function TranscriptList({
                 : `Translating to ${getLanguageName(selectedLanguage)}`}
             </p>
             {selectedTranslationMetrics?.cache_hit && (
-              <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-700 text-xs dark:bg-emerald-900/40 dark:text-emerald-300">
+              <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 font-medium text-emerald-200 text-xs">
                 Cached
               </span>
             )}
             {selectedTranslationDuration && (
-              <span className="rounded-full bg-white/80 px-2 py-0.5 font-medium text-sky-800 text-xs dark:bg-sky-900/60 dark:text-sky-100">
+              <span className="rounded-full bg-white/10 px-2 py-0.5 font-medium text-sky-50 text-xs">
                 {selectedTranslationDuration}
               </span>
             )}
           </div>
-          <p className="mt-1 text-sky-800/90 text-sm dark:text-sky-100/80">
+          <p className="mt-2 text-sky-100/80 text-sm">
             {selectedTranslationJob.status === "pending" &&
               "Queued and waiting for the translation worker to pick it up."}
             {selectedTranslationJob.status === "processing" &&
@@ -822,27 +1058,27 @@ export default function TranscriptList({
           </p>
           {selectedTranslationJob.status === "completed" &&
             selectedTranslationMetrics && (
-              <div className="mt-2 flex flex-wrap gap-2 text-xs">
+              <div className="mt-3 flex flex-wrap gap-2 text-xs">
                 {typeof selectedTranslationMetrics.segment_count === "number" &&
                   selectedTranslationMetrics.segment_count > 0 && (
-                    <span className="rounded-full bg-sky-100 px-2 py-1 dark:bg-sky-900/60">
+                    <span className="rounded-full bg-white/10 px-2 py-1">
                       {selectedTranslationMetrics.segment_count} segments
                     </span>
                   )}
                 {selectedTranslationModelDuration && (
-                  <span className="rounded-full bg-sky-100 px-2 py-1 dark:bg-sky-900/60">
+                  <span className="rounded-full bg-white/10 px-2 py-1">
                     Model time: {selectedTranslationModelDuration}
                   </span>
                 )}
                 {selectedTranslationPersistDuration && (
-                  <span className="rounded-full bg-sky-100 px-2 py-1 dark:bg-sky-900/60">
+                  <span className="rounded-full bg-white/10 px-2 py-1">
                     Save time: {selectedTranslationPersistDuration}
                   </span>
                 )}
                 {selectedTranslationDetectionDuration &&
                   (selectedTranslationMetrics.language_detection_seconds ?? 0) >
                     0 && (
-                    <span className="rounded-full bg-sky-100 px-2 py-1 dark:bg-sky-900/60">
+                    <span className="rounded-full bg-white/10 px-2 py-1">
                       Detect: {selectedTranslationDetectionDuration}
                     </span>
                   )}
@@ -851,72 +1087,111 @@ export default function TranscriptList({
         </div>
       )}
 
-      <div className="max-h-[500px] overflow-y-auto pr-2">
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {isLoadingSelectedTranslation && (
-          <p className="py-4 text-center text-gray-500 dark:text-gray-400">
-            Loading translated transcript...
-          </p>
+          <div className="space-y-3 py-1">
+            {[0, 1, 2].map((index) => (
+              <div
+                className="rounded-[1.25rem] border border-white/8 bg-white/[0.03] p-4"
+                key={index}
+              >
+                <div className="flex gap-2">
+                  <div className="h-6 w-16 animate-pulse rounded-full bg-white/8" />
+                  <div className="h-6 w-24 animate-pulse rounded-full bg-white/8" />
+                </div>
+                <div className="mt-3 h-5 w-full animate-pulse rounded bg-white/8" />
+                <div className="mt-2 h-5 w-4/5 animate-pulse rounded bg-white/8" />
+              </div>
+            ))}
+          </div>
+        )}
+        {showNoSearchMatches && (
+          <div className="rounded-[1.25rem] border border-white/8 bg-white/[0.03] px-4 py-6 text-center">
+            <p className="font-semibold text-foreground text-lg">
+              No matching transcript segments
+            </p>
+            <p className="mt-2 text-muted-foreground">
+              Try a shorter phrase or clear the search to return to the full
+              timeline.
+            </p>
+            <button
+              className="mt-4 rounded-full border border-white/10 bg-white/5 px-4 py-2 font-medium text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
+              onClick={() => setSearchQuery("")}
+              type="button"
+            >
+              Clear search
+            </button>
+          </div>
         )}
         {!isLoadingSelectedTranslation &&
           currentSegments.length === 0 &&
+          !showNoSearchMatches &&
           currentTranscriptContent && (
-            <p className="py-4 text-center text-gray-500 dark:text-gray-400">
-              <span className="text-gray-800 dark:text-gray-200">
+            <p className="rounded-[1.25rem] border border-white/8 bg-white/[0.03] px-4 py-5 text-center text-muted-foreground">
+              <span className="text-foreground">
                 {currentTranscriptContent}
               </span>
             </p>
           )}
         {!isLoadingSelectedTranslation &&
           currentSegments.length === 0 &&
+          !showNoSearchMatches &&
           !currentTranscriptContent && (
-            <p className="py-4 text-center text-gray-500 dark:text-gray-400">
-              No transcript segments available for the selected language.
+            <p className="rounded-[1.25rem] border border-white/8 bg-white/[0.03] px-4 py-5 text-center text-muted-foreground">
+              {selectedLanguage
+                ? "No transcript segments are available for this language yet."
+                : "No transcript segments available."}
             </p>
           )}
-        {!isLoadingSelectedTranslation &&
-          filteredSegments.length > 0 &&
-          filteredSegments.map((segment) => (
-            <div
-              key={getSegmentKey(segment)}
-              ref={(element) => {
-                segmentRefs.current[getSegmentKey(segment)] = element;
-              }}
-            >
-              <TranscriptSegment
-                isActive={activeSegment?.start_time === segment.start_time}
-                isEditable
-                onClick={onSegmentClick}
-                onEdit={handleEditSegment}
-                onRenameSpeaker={handleRenameSpeaker}
-                segment={segment}
-                showSpeaker={showSpeaker && !selectedLanguage}
-                showTimestamps={showTimestamps}
-                speakerName={
-                  segment.speaker
-                    ? (speakerNames[segment.speaker] ?? segment.speaker)
-                    : undefined
-                }
-              />
-            </div>
-          ))}
+        {!isLoadingSelectedTranslation && filteredSegments.length > 0 && (
+          <div className="space-y-3">
+            {filteredSegments.map((segment) => (
+              <div
+                key={getSegmentKey(segment)}
+                ref={(element) => {
+                  segmentRefs.current[getSegmentKey(segment)] = element;
+                }}
+              >
+                <TranscriptSegment
+                  isActive={activeSegment?.start_time === segment.start_time}
+                  isEditable
+                  onClick={onSegmentClick}
+                  onEdit={handleEditSegment}
+                  onRenameSpeaker={handleRenameSpeaker}
+                  segment={segment}
+                  showSpeaker={showSpeaker && !selectedLanguage}
+                  showTimestamps={showTimestamps}
+                  speakerName={
+                    segment.speaker
+                      ? (speakerNames[segment.speaker] ?? segment.speaker)
+                      : undefined
+                  }
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {showTranslationModal && pendingLanguage && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-          <div className="mx-auto max-w-md rounded-lg bg-white p-6 dark:bg-gray-800">
-            <h3 className="mb-4 font-semibold text-gray-800 text-lg dark:text-white">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-md">
+          <div className="panel-elevated mx-auto max-w-md border-white/10 bg-card/95 p-6">
+            <p className="font-semibold text-primary/80 text-xs uppercase tracking-[0.24em]">
+              Translation
+            </p>
+            <h3 className="mt-2 font-semibold text-foreground text-lg">
               Translate Transcript
             </h3>
-            <p className="mb-4 text-gray-700 dark:text-gray-300">
+            <p className="mt-3 text-muted-foreground">
               The transcript will be translated to{" "}
               {AVAILABLE_LANGUAGES.find(
                 (language) => language.code === pendingLanguage
               )?.name ?? pendingLanguage}
               . This may take a few moments.
             </p>
-            <div className="flex justify-end space-x-3">
+            <div className="mt-6 flex justify-end space-x-3">
               <button
-                className="rounded bg-gray-200 px-4 py-2 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
                 onClick={() => {
                   setShowTranslationModal(false);
                   setPendingLanguage(null);
@@ -926,7 +1201,7 @@ export default function TranscriptList({
                 Cancel
               </button>
               <button
-                className="rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
+                className="rounded-full bg-primary px-4 py-2 font-medium text-primary-foreground transition hover:bg-warning"
                 onClick={handleConfirmTranslationClick}
                 type="button"
               >
