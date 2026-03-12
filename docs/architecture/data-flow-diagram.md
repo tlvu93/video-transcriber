@@ -9,7 +9,7 @@ graph TD
     API[API Service]
     TranscriptionWorker[Transcription Service]
     SummarizationWorker[Summarization Service]
-    RabbitMQ[RabbitMQ]
+    TranslationWorker[Translation Service]
     Postgres[(PostgreSQL DB)]
     Ollama[Ollama LLM]
     Frontend[Frontend]
@@ -18,16 +18,14 @@ graph TD
     %% Define styles
     classDef service fill:#b8e0d2,stroke:#333,stroke-width:1px;
     classDef database fill:#d6eaf8,stroke:#333,stroke-width:1px;
-    classDef messaging fill:#f9e79f,stroke:#333,stroke-width:1px;
     classDef model fill:#d7bde2,stroke:#333,stroke-width:1px;
     classDef frontend fill:#f5cba7,stroke:#333,stroke-width:1px;
     classDef storage fill:#d5dbdb,stroke:#333,stroke-width:1px;
     classDef user fill:#f5b7b1,stroke:#333,stroke-width:1px;
 
     %% Apply styles
-    class Watcher,API,TranscriptionWorker,SummarizationWorker service;
+    class Watcher,API,TranscriptionWorker,SummarizationWorker,TranslationWorker service;
     class Postgres database;
-    class RabbitMQ messaging;
     class Whisper,Ollama model;
     class Frontend frontend;
     class FileSystem storage;
@@ -40,12 +38,12 @@ graph TD
     %% Watcher Service Flow
     FileSystem -->|New video detected| Watcher
     Watcher -->|Register video| API
-    Watcher -->|Publish video.created event| RabbitMQ
 
     %% API Service Flow
     API -->|Store video metadata| Postgres
     API -->|Create transcription job| Postgres
-    API -->|Publish job.status.changed event| RabbitMQ
+    API -->|Create summarization job| Postgres
+    API -->|Create translation job| Postgres
 
     %% Transcription Service Flow
     TranscriptionWorker -->|Claim leased job| API
@@ -53,7 +51,6 @@ graph TD
     TranscriptionWorker -->|Use Whisper model| Whisper
     TranscriptionWorker -->|Store transcript| API
     TranscriptionWorker -->|Update job status| API
-    TranscriptionWorker -->|Publish transcription.created event| RabbitMQ
 
     %% Summarization Service Flow
     SummarizationWorker -->|Claim leased job| API
@@ -61,20 +58,20 @@ graph TD
     SummarizationWorker -->|Use LLM for summarization| Ollama
     SummarizationWorker -->|Store summary| API
     SummarizationWorker -->|Update job status| API
-    SummarizationWorker -->|Publish summary.created event| RabbitMQ
+
+    %% Translation Service Flow
+    TranslationWorker -->|Claim leased job| API
+    TranslationWorker -->|Read transcript| Postgres
+    TranslationWorker -->|Use LLM for translation| Ollama
+    TranslationWorker -->|Store translation| API
+    TranslationWorker -->|Update job status| API
 
     %% Frontend Flow
     Frontend -->|Fetch video data| API
     Frontend -->|Fetch transcript data| API
     Frontend -->|Fetch summary data| API
+    Frontend -->|Fetch translations| API
     Frontend -->|Stream video| API
-
-    %% Event Subscriptions
-    RabbitMQ -->|video.created event| TranscriptionWorker
-    RabbitMQ -->|job.status.changed event| TranscriptionWorker
-    RabbitMQ -->|transcription.created event| SummarizationWorker
-    RabbitMQ -->|job.status.changed event| SummarizationWorker
-    RabbitMQ -->|job.status.changed event| API
 
     %% Database Relationships
     Postgres -->|Provide data| API
@@ -88,51 +85,59 @@ graph TD
    - Watcher Service detects the new video file
    - Watcher registers the video with the API Service
    - API Service stores video metadata in PostgreSQL
-   - Watcher publishes a `video.created` event to RabbitMQ
+   - API Service creates a transcription job in PostgreSQL
 
 2. **Transcription Process**:
 
-   - API Service creates a transcription job in PostgreSQL
-   - Transcription Service receives wake-up events from RabbitMQ
+   - Transcription Service polls the API for claimable jobs
    - Transcription Service claims jobs through the API leasing endpoints
    - Transcription Service heartbeats while processing long-running work
    - Transcription Service processes the video using Whisper model
    - Transcription Service stores the transcript via API
-   - Transcription Service publishes a `transcription.created` event
+   - API Service creates downstream summarization and translation jobs in PostgreSQL
 
 3. **Summarization Process**:
 
    - API Service creates a summarization job
-   - Summarization Service receives wake-up events from RabbitMQ
+   - Summarization Service polls the API for claimable jobs
    - Summarization Service claims jobs through the API leasing endpoints
    - Summarization Service heartbeats while processing long-running work
    - Summarization Service uses Ollama LLM to generate a summary
    - Summarization Service stores the summary via API
-   - Summarization Service publishes a `summary.created` event
 
-4. **Frontend Display**:
-   - Frontend fetches video, transcript, and summary data from API
+4. **Translation Process**:
+
+   - API Service creates a translation job
+   - Translation Service polls the API for claimable jobs
+   - Translation Service claims jobs through the API leasing endpoints
+   - Translation Service heartbeats while processing long-running work
+   - Translation Service uses Ollama to generate translations
+   - Translation Service stores translated transcript data via API
+
+5. **Frontend Display**:
+   - Frontend fetches video, transcript, summary, and translation data from API
    - Frontend displays video with synchronized transcript
-   - Frontend shows summary of the video content
+   - Frontend shows generated summaries and translated transcripts
    - User can interact with the video and transcript
 
-This architecture uses a microservices approach with message-based communication through RabbitMQ, allowing for scalable and resilient processing of videos.
+This architecture uses API-centered service decomposition with PostgreSQL-backed leasing, allowing multiple workers to poll safely without a separate message broker.
 
-## Event-Driven Wake-Ups and API Leasing
+## Polling and API Leasing
 
 This system uses a combination of two approaches for service communication:
 
-1. **Event-Driven Wake-Ups**:
+1. **Timed Polling**:
 
-   - Services subscribe to relevant events via RabbitMQ
-   - RabbitMQ acts as a wake-up signal so workers know when to attempt another claim
-   - Example: When a transcription is created, RabbitMQ notifies the Summarization Service
-   - Advantages: low latency and less idle polling
+   - Workers poll the claim endpoints on startup and at a short interval
+   - Polling provides deterministic behavior without a separate broker dependency
+   - Example: when a transcription completes, the API stores the summarization job and the summarization worker claims it on its next poll
+   - Advantages: simpler topology and fewer operational moving parts
 
 2. **API Job Leasing**:
+
    - Workers atomically claim jobs through the API and extend ownership with heartbeats
    - PostgreSQL-backed leases prevent multiple workers from processing the same job
-   - Workers can still claim on startup or on a timed fallback when no wake-up event is received
+   - Workers can still claim on startup or on the next polling interval when no job is immediately available
    - Advantages: race-safe ownership with predictable recovery from stalled workers
 
-Using both approaches provides low-latency wake-ups without making RabbitMQ the source of truth for job ownership.
+Using short polling plus PostgreSQL-backed leases keeps ownership deterministic while removing RabbitMQ as a separate infrastructure dependency.

@@ -6,7 +6,14 @@ import {
   fetchSummariesByTranscriptId,
   fetchSummarizationJobs,
 } from "../api/videoService";
-import type { SummarizationJob, Summary } from "../types/domain";
+import type {
+  SummarizationJob,
+  Summary,
+  SummaryActionItem,
+  SummaryChapter,
+  SummaryEntity,
+  SummaryHighlight,
+} from "../types/domain";
 import { formatRelativeDate } from "../utils/formatters";
 import { sortByNewest } from "../utils/transcript";
 import { SummaryPanelSkeleton } from "./WorkspaceStates";
@@ -15,6 +22,13 @@ const NUMBERED_POINT_PATTERN = /\d+\.\s/;
 const NUMBER_SPLIT_PATTERN = /(\d+\.\s+)/g;
 const SENTENCE_SPLIT_PATTERN = /\n\n+|\.\s+(?=[A-Z])/;
 const SUBPOINT_SPLIT_PATTERN = /\n\s*[-*]\s+/;
+const SUMMARY_PROFILE_OPTIONS = [
+  { value: "generic", label: "Generic media" },
+  { value: "meeting", label: "Meeting" },
+  { value: "podcast", label: "Podcast" },
+  { value: "lecture", label: "Lecture" },
+  { value: "interview", label: "Interview" },
+] as const;
 
 type SummaryParagraph =
   | {
@@ -28,17 +42,31 @@ type SummaryParagraph =
       text: string;
     };
 
+function normalizeSummaryMarkdown(content: string): string {
+  return content
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\r\n/g, "\n")
+    .trim();
+}
+
 function formatSummaryContent(content: string | undefined): ReactNode {
   if (!content) {
     return null;
   }
 
-  const hasNumberedPoints = NUMBERED_POINT_PATTERN.test(content);
+  const normalizedContent = normalizeSummaryMarkdown(content);
+  if (!normalizedContent) {
+    return null;
+  }
+
+  const hasNumberedPoints = NUMBERED_POINT_PATTERN.test(normalizedContent);
 
   let paragraphs: SummaryParagraph[] = [];
 
   if (hasNumberedPoints) {
-    const parts = content.split(NUMBER_SPLIT_PATTERN);
+    const parts = normalizedContent.split(NUMBER_SPLIT_PATTERN);
 
     for (let i = 1; i < parts.length; i += 2) {
       if (i + 1 < parts.length) {
@@ -82,7 +110,7 @@ function formatSummaryContent(content: string | undefined): ReactNode {
       });
     }
   } else {
-    paragraphs = content
+    paragraphs = normalizedContent
       .split(SENTENCE_SPLIT_PATTERN)
       .map((paragraph) => paragraph.trim())
       .filter((paragraph) => paragraph)
@@ -253,9 +281,186 @@ function getSummaryJobMessage(job: SummarizationJob | null) {
   return "The latest summary output is ready.";
 }
 
+function formatProfileLabel(profile: string | null | undefined): string {
+  switch (profile) {
+    case "meeting":
+      return "Meeting";
+    case "podcast":
+      return "Podcast";
+    case "lecture":
+      return "Lecture";
+    case "interview":
+      return "Interview";
+    default:
+      return "Generic media";
+  }
+}
+
+function formatTimelineTimestamp(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) {
+    return "Time unclear";
+  }
+
+  const totalSeconds = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours.toString().padStart(2, "0")}:${minutes
+      .toString()
+      .padStart(2, "0")}:${remainingSeconds.toString().padStart(2, "0")}`;
+  }
+
+  return `${minutes.toString().padStart(2, "0")}:${remainingSeconds
+    .toString()
+    .padStart(2, "0")}`;
+}
+
+function SectionHeading({
+  eyebrow,
+  title,
+}: {
+  eyebrow: string;
+  title: string;
+}) {
+  return (
+    <div>
+      <p className="font-semibold text-primary/80 text-[11px] uppercase tracking-[0.18em]">
+        {eyebrow}
+      </p>
+      <h3 className="mt-2 font-semibold text-foreground text-base">{title}</h3>
+    </div>
+  );
+}
+
+function renderChapterCards(chapters: SummaryChapter[]): ReactNode {
+  if (chapters.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="mt-6">
+      <SectionHeading eyebrow="Structure" title="Chapters" />
+      <div className="mt-3 grid gap-3">
+        {chapters.map((chapter, index) => (
+          <article
+            className="rounded-2xl border border-white/8 bg-white/5 p-4"
+            key={`${chapter.title}-${chapter.start_time ?? index}`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="font-medium text-foreground">{chapter.title}</h4>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-muted-foreground text-xs">
+                {formatTimelineTimestamp(chapter.start_time)}
+                {chapter.end_time !== null && chapter.end_time !== undefined
+                  ? ` - ${formatTimelineTimestamp(chapter.end_time)}`
+                  : ""}
+              </span>
+            </div>
+            <p className="mt-3 text-muted-foreground text-sm leading-6">
+              {chapter.summary}
+            </p>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function renderHighlightCards(highlights: SummaryHighlight[]): ReactNode {
+  if (highlights.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="mt-6">
+      <SectionHeading eyebrow="Moments" title="Highlights" />
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        {highlights.map((highlight, index) => (
+          <article
+            className="rounded-2xl border border-white/8 bg-white/5 p-4"
+            key={`${highlight.title}-${highlight.timestamp_seconds ?? index}`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="font-medium text-foreground">{highlight.title}</h4>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-muted-foreground text-xs">
+                {formatTimelineTimestamp(highlight.timestamp_seconds)}
+              </span>
+            </div>
+            <p className="mt-3 text-muted-foreground text-sm leading-6">
+              {highlight.detail}
+            </p>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function renderActionItems(actionItems: SummaryActionItem[]): ReactNode {
+  if (actionItems.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="mt-6">
+      <SectionHeading eyebrow="Follow-up" title="Action items" />
+      <div className="mt-3 space-y-3">
+        {actionItems.map((item, index) => (
+          <article
+            className="rounded-2xl border border-white/8 bg-white/5 p-4"
+            key={`${item.task}-${item.owner ?? index}`}
+          >
+            <p className="font-medium text-foreground">{item.task}</p>
+            <p className="mt-2 text-muted-foreground text-sm">
+              {item.owner ? `Owner: ${item.owner}` : "Owner not stated"}
+              {item.due_hint ? ` · Due: ${item.due_hint}` : ""}
+            </p>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function renderEntities(entities: SummaryEntity[]): ReactNode {
+  if (entities.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="mt-6">
+      <SectionHeading eyebrow="Context" title="Named entities" />
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        {entities.map((entity, index) => (
+          <article
+            className="rounded-2xl border border-white/8 bg-white/5 p-4"
+            key={`${entity.name}-${entity.entity_type}-${index}`}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="font-medium text-foreground">{entity.name}</h4>
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-muted-foreground text-[11px] uppercase tracking-[0.18em]">
+                {entity.entity_type}
+              </span>
+            </div>
+            {entity.description ? (
+              <p className="mt-3 text-muted-foreground text-sm leading-6">
+                {entity.description}
+              </p>
+            ) : null}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function VideoSummary({ transcriptId }: VideoSummaryProps) {
   const queryClient = useQueryClient();
   const [copied, setCopied] = useState(false);
+  const [selectedProfile, setSelectedProfile] = useState<
+    "generic" | "interview" | "lecture" | "meeting" | "podcast"
+  >("generic");
   const summaryQuery = useQuery({
     queryKey: ["summaries", transcriptId],
     queryFn: () => fetchSummariesByTranscriptId(transcriptId),
@@ -269,7 +474,10 @@ export default function VideoSummary({ transcriptId }: VideoSummaryProps) {
     select: sortByNewest,
   });
   const generateMutation = useMutation({
-    mutationFn: () => createSummarizationJob(transcriptId),
+    mutationFn: () =>
+      createSummarizationJob(transcriptId, {
+        contentProfile: selectedProfile,
+      }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({
         queryKey: ["summarizationJobs", transcriptId],
@@ -283,6 +491,12 @@ export default function VideoSummary({ transcriptId }: VideoSummaryProps) {
   const jobs = jobsQuery.data ?? [];
   const summary: Summary | null = summaries[0] ?? null;
   const latestJob = getLatestJob(jobs);
+  const summaryMetadata = summary?.summary_metadata ?? {};
+  const summaryChapters = summaryMetadata.chapters ?? [];
+  const summaryHighlights = summaryMetadata.highlights ?? [];
+  const summaryKeywords = summaryMetadata.keywords ?? [];
+  const summaryActionItems = summaryMetadata.action_items ?? [];
+  const summaryEntities = summaryMetadata.entities ?? [];
   const isGenerating =
     generateMutation.isPending ||
     latestJob?.status === "pending" ||
@@ -316,6 +530,20 @@ export default function VideoSummary({ transcriptId }: VideoSummaryProps) {
     const timeoutId = window.setTimeout(() => setCopied(false), 2000);
     return () => window.clearTimeout(timeoutId);
   }, [copied]);
+
+  useEffect(() => {
+    const nextProfile =
+      latestJob?.content_profile ?? summary?.content_profile ?? "generic";
+    if (
+      nextProfile === "generic" ||
+      nextProfile === "meeting" ||
+      nextProfile === "podcast" ||
+      nextProfile === "lecture" ||
+      nextProfile === "interview"
+    ) {
+      setSelectedProfile(nextProfile);
+    }
+  }, [latestJob?.content_profile, summary?.content_profile]);
 
   async function handleCopy(): Promise<void> {
     if (!summary?.content) {
@@ -380,6 +608,51 @@ export default function VideoSummary({ transcriptId }: VideoSummaryProps) {
 
         <div className="mt-5 flex flex-wrap items-center gap-2 text-muted-foreground text-sm">
           <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+            Profile: {formatProfileLabel(summary.content_profile)}
+          </span>
+          {summaryKeywords.length > 0 ? (
+            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+              {summaryKeywords.length} keyword
+              {summaryKeywords.length === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {summaryHighlights.length > 0 ? (
+            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+              {summaryHighlights.length} highlight
+              {summaryHighlights.length === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {summaryChapters.length > 0 ? (
+            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+              {summaryChapters.length} chapter
+              {summaryChapters.length === 1 ? "" : "s"}
+            </span>
+          ) : null}
+        </div>
+
+        {summaryKeywords.length > 0 && (
+          <section className="mt-6">
+            <SectionHeading eyebrow="Signals" title="Keywords" />
+            <div className="mt-3 flex flex-wrap gap-2">
+              {summaryKeywords.map((keyword) => (
+                <span
+                  className="rounded-full border border-primary/20 bg-primary/10 px-3 py-2 text-primary text-sm"
+                  key={keyword}
+                >
+                  {keyword}
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {renderChapterCards(summaryChapters)}
+        {renderHighlightCards(summaryHighlights)}
+        {renderActionItems(summaryActionItems)}
+        {renderEntities(summaryEntities)}
+
+        <div className="mt-5 flex flex-wrap items-center gap-2 text-muted-foreground text-sm">
+          <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
             Saved {formatRelativeDate(summary.created_at)}
           </span>
           <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
@@ -420,7 +693,8 @@ export default function VideoSummary({ transcriptId }: VideoSummaryProps) {
           Ready when you are
         </h3>
         <p className="mt-3 text-muted-foreground leading-7">
-          {getSummaryJobMessage(latestJob)}
+          {getSummaryJobMessage(latestJob)} The current profile is{" "}
+          {formatProfileLabel(selectedProfile).toLowerCase()}.
         </p>
       </div>
     );
@@ -446,14 +720,38 @@ export default function VideoSummary({ transcriptId }: VideoSummaryProps) {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`rounded-full border px-3 py-1 font-medium text-xs uppercase tracking-[0.18em] ${statusPillClassName}`}
-            >
-              {statusPill}
-            </span>
+	          <div className="flex flex-wrap items-center gap-2">
+	            <span
+	              className={`rounded-full border px-3 py-1 font-medium text-xs uppercase tracking-[0.18em] ${statusPillClassName}`}
+	            >
+	              {statusPill}
+	            </span>
 
-            <button
+              <label>
+                <span className="sr-only">Summary profile</span>
+                <select
+                  className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/30"
+                  onChange={(event) =>
+                    setSelectedProfile(
+                      event.target.value as
+                        | "generic"
+                        | "interview"
+                        | "lecture"
+                        | "meeting"
+                        | "podcast"
+                    )
+                  }
+                  value={selectedProfile}
+                >
+                  {SUMMARY_PROFILE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+	            <button
               className="rounded-full border border-white/10 bg-white/5 px-3 py-2 font-medium text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!summary}
               onClick={() => {

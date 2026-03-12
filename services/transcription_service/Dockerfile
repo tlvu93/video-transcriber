@@ -1,4 +1,4 @@
-FROM python:3.12.13-slim
+FROM python:3.13.12-slim
 
 WORKDIR /app
 
@@ -24,26 +24,21 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -U pip setuptools wheel
 
-# Copy common code
-COPY common /app/common
+# Copy backend package metadata and runtime code
+COPY pyproject.toml /app/pyproject.toml
+COPY alembic.ini /app/alembic.ini
+COPY alembic /app/alembic
+COPY backend /app/backend
+COPY services/transcription_service/requirements.lock /app/services/transcription_service/requirements.lock
 
-# Copy transcription service
-COPY services/transcription_service /app/transcription_service
+RUN pip install --no-cache-dir -r /app/services/transcription_service/requirements.lock
+RUN pip install --no-cache-dir --no-deps "/app[transcription]"
 
-RUN pip install --no-cache-dir -r /app/common/requirements.lock
-RUN pip install --no-cache-dir -r /app/transcription_service/requirements.lock
-RUN pip install --no-cache-dir --no-deps -e /app/common
-RUN pip install --no-cache-dir --no-deps -e "/app/transcription_service"
+# Create necessary directories used by the worker runtime
+RUN mkdir -p /app/data/videos /app/data/transcriptions
 
-# Create a .pth file to ensure the common package is in the Python path
-RUN echo "/app" > $(python -c "import site; print(site.getsitepackages()[0])")/app.pth
+# Set working directory to the consolidated backend root
+WORKDIR /app
 
-# Create necessary directories and ensure proper permissions
-RUN mkdir -p /app/data/videos /app/data/transcriptions && \
-    chmod -R 777 /app/data
-
-# Set working directory to transcription service
-WORKDIR /app/transcription_service
-
-# Run the transcription service
-CMD ["python", "-m", "transcription.main"]
+# Run the canonical backend transcription entrypoint
+CMD ["python", "-m", "backend.app.entrypoints.transcription_worker"]

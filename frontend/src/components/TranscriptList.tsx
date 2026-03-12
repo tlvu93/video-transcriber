@@ -1,25 +1,31 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import {
+  createTranscriptComment,
   createTranslationJob,
+  deleteTranscriptComment,
+  downloadTranscriptExport,
+  fetchTranscriptComments,
+  downloadTranslatedTranscriptExport,
+  fetchTranscriptRevisions,
   fetchTranslatedTranscripts,
   fetchTranslationJobs,
+  restoreTranscriptRevision,
+  updateTranscriptReview,
   updateTranscriptSegments,
+  updateTranscriptSpeakerAliases,
   updateTranslatedTranscriptSegments,
 } from "../api/videoService";
 import type {
   Transcript,
+  TranslationGlossaryTerm,
+  TranscriptRevision,
   TranscriptSegment as TranscriptSegmentType,
   TranslatedTranscript,
   TranslationJob,
   TranslationJobMetrics,
+  TranslationQaMetrics,
 } from "../types/domain";
-import {
-  downloadFile,
-  generateSRT,
-  generateTXT,
-  generateVTT,
-} from "../utils/exportUtils";
 import {
   normalizeTranslatedTranscript,
   sortByNewest,
@@ -31,10 +37,15 @@ const AVAILABLE_LANGUAGES = [
   { code: "es", name: "Spanish", flag: "🇪🇸" },
   { code: "fr", name: "French", flag: "🇫🇷" },
   { code: "de", name: "German", flag: "🇩🇪" },
+  { code: "it", name: "Italian", flag: "🇮🇹" },
   { code: "ja", name: "Japanese", flag: "🇯🇵" },
+  { code: "ko", name: "Korean", flag: "🇰🇷" },
+  { code: "nl", name: "Dutch", flag: "🇳🇱" },
+  { code: "pt", name: "Portuguese", flag: "🇵🇹" },
+  { code: "zh", name: "Chinese", flag: "🇨🇳" },
 ] as const;
 
-const SPEAKER_NAME_STORAGE_PREFIX = "transcript-speaker-names";
+type ExportFormat = "ass" | "json" | "review_package" | "txt" | "srt" | "vtt";
 
 function GlobeIcon() {
   return (
@@ -165,6 +176,81 @@ function getLanguageFlag(languageCode: string | null | undefined): string {
   return getLanguageConfig(languageCode)?.flag ?? "🌐";
 }
 
+function getExportFormatLabel(format: ExportFormat | null): string {
+  switch (format) {
+    case "ass":
+      return "ASS";
+    case "json":
+      return "JSON";
+    case "review_package":
+      return "review package";
+    case "srt":
+      return "SRT";
+    case "txt":
+      return "TXT";
+    case "vtt":
+      return "VTT";
+    default:
+      return "export";
+  }
+}
+
+function parseGlossaryDraft(draft: string): TranslationGlossaryTerm[] {
+  return draft
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^(.+?)\s*(?:=>|->|:)\s*(.+)$/);
+      const sourceTerm = match?.[1]?.trim();
+      const targetTerm = match?.[2]?.trim();
+      if (!sourceTerm || !targetTerm) {
+        return null;
+      }
+
+      return {
+        source_term: sourceTerm,
+        target_term: targetTerm,
+      };
+    })
+    .filter(
+      (term): term is TranslationGlossaryTerm =>
+        Boolean(term?.source_term && term.target_term)
+    );
+}
+
+function getTranslationQaMetrics(
+  translation: TranslatedTranscript | null,
+  metrics: TranslationJobMetrics | null
+): TranslationQaMetrics | null {
+  return translation?.qa_metrics ?? metrics?.qa_metrics ?? null;
+}
+
+function formatRevisionTimestamp(createdAt: string): string {
+  const timestamp = new Date(createdAt);
+  if (Number.isNaN(timestamp.getTime())) {
+    return "Unknown time";
+  }
+
+  return timestamp.toLocaleString([], {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+function getReviewStatusLabel(reviewStatus: string): string {
+  switch (reviewStatus) {
+    case "in_review":
+      return "In review";
+    case "approved":
+      return "Approved";
+    case "needs_changes":
+      return "Needs changes";
+    default:
+      return "Draft";
+  }
+}
+
 function countUniqueSpeakers(
   segments: TranscriptSegmentType[] | null | undefined
 ): number {
@@ -177,28 +263,6 @@ function countUniqueSpeakers(
   }
 
   return speakerIds.size;
-}
-
-function buildSpeakerStorageKey(transcriptId: string): string {
-  return `${SPEAKER_NAME_STORAGE_PREFIX}:${transcriptId}`;
-}
-
-function getSpeakerNameStorage(): Storage | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  const storage = window.localStorage;
-
-  if (
-    !storage ||
-    typeof storage.getItem !== "function" ||
-    typeof storage.setItem !== "function"
-  ) {
-    return null;
-  }
-
-  return storage;
 }
 
 function createDefaultSpeakerNames(
@@ -219,46 +283,6 @@ function createDefaultSpeakerNames(
   });
 
   return speakerNames;
-}
-
-function readSpeakerNames(transcriptId: string): Record<string, string> {
-  const storage = getSpeakerNameStorage();
-
-  if (!storage) {
-    return {};
-  }
-
-  try {
-    const storedValue = storage.getItem(buildSpeakerStorageKey(transcriptId));
-    if (!storedValue) {
-      return {};
-    }
-
-    return JSON.parse(storedValue) as Record<string, string>;
-  } catch (error) {
-    console.error("Failed to read speaker names from local storage:", error);
-    return {};
-  }
-}
-
-function writeSpeakerNames(
-  transcriptId: string,
-  speakerNames: Record<string, string>
-): void {
-  const storage = getSpeakerNameStorage();
-
-  if (!storage) {
-    return;
-  }
-
-  try {
-    storage.setItem(
-      buildSpeakerStorageKey(transcriptId),
-      JSON.stringify(speakerNames)
-    );
-  } catch (error) {
-    console.error("Failed to write speaker names to local storage:", error);
-  }
 }
 
 function getSegmentKey(segment: TranscriptSegmentType): string {
@@ -288,17 +312,31 @@ export default function TranscriptList({
   const segmentRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const translateMenuRef = useRef<HTMLDivElement | null>(null);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
+  const historyMenuRef = useRef<HTMLDivElement | null>(null);
   const transcriptId = transcript?.id ?? "";
   const videoId = transcript?.video_id ?? "";
   const [showTimestamps, setShowTimestamps] = useState(true);
   const [showSpeaker, setShowSpeaker] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [historyMenuOpen, setHistoryMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [commentDraft, setCommentDraft] = useState("");
+  const [reviewAssigneeDraft, setReviewAssigneeDraft] = useState("");
+  const [reviewStatusDraft, setReviewStatusDraft] = useState<
+    "approved" | "draft" | "in_review" | "needs_changes"
+  >("draft");
   const [translateMenuOpen, setTranslateMenuOpen] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState<string | null>(null);
   const [showTranslationModal, setShowTranslationModal] = useState(false);
   const [pendingLanguage, setPendingLanguage] = useState<string | null>(null);
+  const [translationStyleGuideDraft, setTranslationStyleGuideDraft] =
+    useState("");
+  const [translationGlossaryDraft, setTranslationGlossaryDraft] = useState("");
   const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(
+    null
+  );
 
   const translationJobsQuery = useQuery({
     queryKey: ["translationJobs", transcriptId],
@@ -323,9 +361,28 @@ export default function TranscriptList({
         translations.map((item) => [item.language, item])
       ) as Record<string, TranslatedTranscript>,
   });
+  const transcriptRevisionsQuery = useQuery({
+    queryKey: ["transcriptRevisions", transcriptId],
+    queryFn: async () =>
+      transcriptId ? fetchTranscriptRevisions(transcriptId) : [],
+    enabled: Boolean(transcriptId),
+  });
+  const transcriptCommentsQuery = useQuery({
+    queryKey: ["transcriptComments", transcriptId],
+    queryFn: async () =>
+      transcriptId ? fetchTranscriptComments(transcriptId) : [],
+    enabled: Boolean(transcriptId),
+  });
   const createTranslationMutation = useMutation({
-    mutationFn: (language: string) =>
-      createTranslationJob(transcriptId, language),
+    mutationFn: (payload: {
+      glossaryTerms: TranslationGlossaryTerm[];
+      language: string;
+      styleGuide: string | null;
+    }) =>
+      createTranslationJob(transcriptId, payload.language, {
+        glossaryTerms: payload.glossaryTerms,
+        styleGuide: payload.styleGuide,
+      }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({
         queryKey: ["translationJobs", transcriptId],
@@ -369,8 +426,100 @@ export default function TranscriptList({
       onTranscriptUpdated?.();
     },
   });
+  const updateSpeakerAliasesMutation = useMutation({
+    mutationFn: (payload: {
+      transcriptId: string;
+      speakerAliases: Record<string, string>;
+    }) =>
+      updateTranscriptSpeakerAliases(
+        payload.transcriptId,
+        payload.speakerAliases
+      ),
+    onSuccess: async (updatedTranscript) => {
+      const defaultSpeakerNames = createDefaultSpeakerNames(
+        updatedTranscript.segments
+      );
+      setSpeakerNames({
+        ...defaultSpeakerNames,
+        ...(updatedTranscript.speaker_aliases ?? {}),
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["transcripts", videoId],
+      });
+      onTranscriptUpdated?.();
+    },
+  });
+  const restoreTranscriptRevisionMutation = useMutation({
+    mutationFn: (payload: { transcriptId: string; revisionId: string }) =>
+      restoreTranscriptRevision(payload.transcriptId, payload.revisionId),
+    onSuccess: async (updatedTranscript) => {
+      const defaultSpeakerNames = createDefaultSpeakerNames(
+        updatedTranscript.segments
+      );
+      setSpeakerNames({
+        ...defaultSpeakerNames,
+        ...(updatedTranscript.speaker_aliases ?? {}),
+      });
+      setSelectedLanguage(null);
+      setHistoryMenuOpen(false);
+      await queryClient.invalidateQueries({
+        queryKey: ["transcripts", videoId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["transcriptRevisions", transcriptId],
+      });
+      onTranscriptUpdated?.();
+    },
+  });
+  const updateTranscriptReviewMutation = useMutation({
+    mutationFn: (payload: {
+      review_assignee?: string | null;
+      review_status: "approved" | "draft" | "in_review" | "needs_changes";
+    }) => updateTranscriptReview(transcriptId, payload),
+    onSuccess: async (updatedTranscript) => {
+      setReviewStatusDraft(
+        (updatedTranscript.review_status as
+          | "approved"
+          | "draft"
+          | "in_review"
+          | "needs_changes") ?? "draft"
+      );
+      setReviewAssigneeDraft(updatedTranscript.review_assignee ?? "");
+      await queryClient.invalidateQueries({
+        queryKey: ["transcripts", videoId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["transcriptRevisions", transcriptId],
+      });
+      onTranscriptUpdated?.();
+    },
+  });
+  const createTranscriptCommentMutation = useMutation({
+    mutationFn: (payload: {
+      author_name?: string;
+      body: string;
+      segment_id?: number;
+      timestamp_seconds?: number;
+    }) => createTranscriptComment(transcriptId, payload),
+    onSuccess: async () => {
+      setCommentDraft("");
+      await queryClient.invalidateQueries({
+        queryKey: ["transcriptComments", transcriptId],
+      });
+    },
+  });
+  const deleteTranscriptCommentMutation = useMutation({
+    mutationFn: (commentId: string) => deleteTranscriptComment(commentId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["transcriptComments", transcriptId],
+      });
+    },
+  });
 
   const translations = translationsQuery.data ?? {};
+  const transcriptComments = transcriptCommentsQuery.data ?? [];
+  const transcriptRevisions = transcriptRevisionsQuery.data ?? [];
   const translationJobs = translationJobsQuery.data ?? [];
   const activeTranslationJobs = translationJobs.filter(isActiveJob);
   const selectedTranslationJob = selectedLanguage
@@ -381,8 +530,16 @@ export default function TranscriptList({
   const selectedTranslationMetrics = getTranslationMetrics(
     selectedTranslationJob
   );
+  const selectedTranslation =
+    selectedLanguage && translations[selectedLanguage]
+      ? translations[selectedLanguage]
+      : null;
+  const selectedTranslationQaMetrics = getTranslationQaMetrics(
+    selectedTranslation,
+    selectedTranslationMetrics
+  );
   const currentTranscriptData = selectedLanguage
-    ? (translations[selectedLanguage] ?? null)
+    ? (selectedTranslation ?? null)
     : transcript;
   const currentTranscriptContent = currentTranscriptData?.content ?? "";
   const currentSegments = currentTranscriptData?.segments ?? [];
@@ -416,12 +573,22 @@ export default function TranscriptList({
     const defaultSpeakerNames = createDefaultSpeakerNames(transcript?.segments);
     const mergedSpeakerNames = {
       ...defaultSpeakerNames,
-      ...readSpeakerNames(transcriptId),
+      ...(transcript?.speaker_aliases ?? {}),
     };
 
     setSpeakerNames(mergedSpeakerNames);
-    writeSpeakerNames(transcriptId, mergedSpeakerNames);
-  }, [transcript?.segments, transcriptId]);
+  }, [transcript?.segments, transcript?.speaker_aliases, transcriptId]);
+
+  useEffect(() => {
+    setReviewStatusDraft(
+      (transcript?.review_status as
+        | "approved"
+        | "draft"
+        | "in_review"
+        | "needs_changes") ?? "draft"
+    );
+    setReviewAssigneeDraft(transcript?.review_assignee ?? "");
+  }, [transcript?.review_assignee, transcript?.review_status]);
 
   useEffect(() => {
     if (currentTranscriptData) {
@@ -450,6 +617,14 @@ export default function TranscriptList({
       ) {
         setMenuOpen(false);
       }
+
+      if (
+        historyMenuOpen &&
+        historyMenuRef.current &&
+        !historyMenuRef.current.contains(event.target)
+      ) {
+        setHistoryMenuOpen(false);
+      }
     }
 
     function handleKeyDown(event: KeyboardEvent): void {
@@ -459,10 +634,13 @@ export default function TranscriptList({
 
       setTranslateMenuOpen(false);
       setMenuOpen(false);
+      setHistoryMenuOpen(false);
 
       if (showTranslationModal) {
         setShowTranslationModal(false);
         setPendingLanguage(null);
+        setTranslationStyleGuideDraft("");
+        setTranslationGlossaryDraft("");
       }
     }
 
@@ -473,7 +651,7 @@ export default function TranscriptList({
       document.removeEventListener("mousedown", handlePointerDown);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [menuOpen, showTranslationModal, translateMenuOpen]);
+  }, [historyMenuOpen, menuOpen, showTranslationModal, translateMenuOpen]);
 
   if (!transcript) {
     return (
@@ -523,10 +701,16 @@ export default function TranscriptList({
       return;
     }
 
-    await createTranslationMutation.mutateAsync(pendingLanguage);
+    await createTranslationMutation.mutateAsync({
+      language: pendingLanguage,
+      styleGuide: translationStyleGuideDraft.trim() || null,
+      glossaryTerms: parseGlossaryDraft(translationGlossaryDraft),
+    });
     setSelectedLanguage(pendingLanguage);
     setPendingLanguage(null);
     setShowTranslationModal(false);
+    setTranslationStyleGuideDraft("");
+    setTranslationGlossaryDraft("");
   }
 
   async function handleEditSegment(
@@ -569,69 +753,110 @@ export default function TranscriptList({
 
     const trimmedName = newName.trim();
     const defaultSpeakerNames = createDefaultSpeakerNames(transcript?.segments);
+    const previousSpeakerNames = speakerNames;
     const nextSpeakerNames = {
+      ...defaultSpeakerNames,
       ...speakerNames,
       [speakerId]: trimmedName || defaultSpeakerNames[speakerId] || speakerId,
     };
 
     setSpeakerNames(nextSpeakerNames);
-    writeSpeakerNames(transcriptId, nextSpeakerNames);
+    updateSpeakerAliasesMutation.mutate(
+      {
+        transcriptId,
+        speakerAliases: nextSpeakerNames,
+      },
+      {
+        onError: (error) => {
+          console.error("Failed to persist speaker aliases:", error);
+          setSpeakerNames(previousSpeakerNames);
+        },
+      }
+    );
   }
 
-  function handleDownloadTranscript(format: "txt" | "srt" | "vtt"): void {
-    if (currentSegments.length === 0) {
+  function formatRevisionReason(revision: TranscriptRevision): string {
+    if (revision.reason.startsWith("restore_revision_")) {
+      const restoredRevisionNumber = revision.reason.replace(
+        "restore_revision_",
+        ""
+      );
+      return `Restored from revision ${restoredRevisionNumber}`;
+    }
+
+    switch (revision.reason) {
+      case "initial_import":
+        return "Initial import";
+      case "segment_edit":
+        return "Segment edit";
+      case "speaker_alias_update":
+        return "Speaker rename";
+      default:
+        return revision.reason.replace(/_/g, " ");
+    }
+  }
+
+  function handleRestoreRevision(revisionId: string): void {
+    restoreTranscriptRevisionMutation.mutate({
+      transcriptId,
+      revisionId,
+    });
+  }
+
+  function handleSaveReviewState(): void {
+    updateTranscriptReviewMutation.mutate({
+      review_status: reviewStatusDraft,
+      review_assignee: reviewAssigneeDraft.trim() || null,
+    });
+  }
+
+  function handleCreateComment(): void {
+    const trimmedBody = commentDraft.trim();
+    if (!trimmedBody || !transcriptId) {
       return;
     }
 
-    let content = "";
-    const mimeType = "text/plain";
-    let extension = "txt";
+    createTranscriptCommentMutation.mutate({
+      author_name: reviewAssigneeDraft.trim() || "Local Reviewer",
+      body: trimmedBody,
+      segment_id: activeSegment?.id,
+      timestamp_seconds: activeSegment?.start_time ?? currentTime,
+    });
+  }
 
-    switch (format) {
-      case "srt": {
-        content = generateSRT(currentSegments);
-        extension = "srt";
-        break;
-      }
-      case "vtt": {
-        content = generateVTT(currentSegments);
-        extension = "vtt";
-        break;
-      }
-      default: {
-        if (showTimestamps || showSpeaker) {
-          content = currentSegments
-            .map((segment) => {
-              if (
-                showTimestamps &&
-                showSpeaker &&
-                segment.speaker &&
-                !selectedLanguage
-              ) {
-                const speakerName =
-                  speakerNames[segment.speaker] ?? segment.speaker;
-
-                return `[${formatTimeForDownload(segment.start_time)}] ${speakerName}: ${segment.text}`;
-              }
-
-              if (showTimestamps) {
-                return `[${formatTimeForDownload(segment.start_time)}] ${segment.text}`;
-              }
-
-              if (showSpeaker && segment.speaker) {
-                return `${speakerNames[segment.speaker] ?? segment.speaker}: ${segment.text}`;
-              }
-
-              return segment.text;
-            })
-            .join("\n\n");
-        } else {
-          content = generateTXT(currentSegments);
-        }
-      }
+  async function handleDownloadTranscript(format: ExportFormat): Promise<void> {
+    if (!transcriptId) {
+      return;
     }
 
-    downloadFile(content, `transcript.${extension}`, mimeType);
+    setExportError(null);
+    setExportingFormat(format);
+
+    try {
+      if (
+        format !== "review_package" &&
+        selectedLanguage &&
+        translations[selectedLanguage]
+      ) {
+        await downloadTranslatedTranscriptExport(translations[selectedLanguage].id, {
+          format,
+          includeSpeakers: showSpeaker,
+          includeTimestamps: showTimestamps,
+        });
+        return;
+      }
+
+      await downloadTranscriptExport(transcriptId, {
+        format,
+        includeSpeakers: showSpeaker,
+        includeTimestamps: showTimestamps,
+      });
+    } catch (error) {
+      console.error("Failed to download transcript export:", error);
+      setExportError("Export failed. Please try again.");
+    } finally {
+      setExportingFormat(null);
+    }
   }
 
   function formatTimeForDownload(seconds: number | undefined | null): string {
@@ -664,6 +889,13 @@ export default function TranscriptList({
   const selectedTranslationStrategyLabel = getTranslationStrategyLabel(
     selectedTranslationMetrics?.translation_strategy
   );
+  const selectedTranslationGlossaryCount =
+    selectedTranslation?.glossary_terms?.length ??
+    selectedTranslationMetrics?.glossary_term_count ??
+    0;
+  const selectedTranslationHasStyleGuide =
+    Boolean(selectedTranslation?.style_guide) ||
+    Boolean(selectedTranslationMetrics?.style_guide_used);
   const activePlayheadLabel =
     activeSegment && currentTime >= 0
       ? formatTimeForDownload(activeSegment.start_time)
@@ -680,7 +912,11 @@ export default function TranscriptList({
     !isLoadingSelectedTranslation &&
     currentSegments.length > 0 &&
     searchQuery.trim().length > 0 &&
-    filteredSegments.length === 0;
+      filteredSegments.length === 0;
+  const currentReviewLabel = getReviewStatusLabel(reviewStatusDraft);
+  const commentTargetLabel = activeSegment
+    ? `Commenting on ${formatTimeForDownload(activeSegment.start_time)}`
+    : `Commenting at ${formatTimeForDownload(currentTime)}`;
 
   function scrollToCurrentSegment(): void {
     if (!activeSegment) {
@@ -819,12 +1055,80 @@ export default function TranscriptList({
               className="relative inline-block text-left"
               ref={exportMenuRef}
             >
+              <div
+                className="relative inline-block text-left"
+                ref={historyMenuRef}
+              >
+                <button
+                  className="mr-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
+                  onClick={() => setHistoryMenuOpen(!historyMenuOpen)}
+                  type="button"
+                >
+                  History
+                </button>
+                {historyMenuOpen && (
+                  <div className="panel absolute right-full z-10 mt-2 mr-2 max-h-80 w-80 overflow-y-auto rounded-[1.25rem] border-white/10 bg-card/95 p-2 focus:outline-none">
+                    <div className="space-y-1" role="menu">
+                      <div className="px-3 py-2 font-semibold text-foreground text-sm">
+                        Revision history
+                      </div>
+                      {transcriptRevisions.length === 0 ? (
+                        <div className="px-3 py-2 text-muted-foreground text-sm">
+                          No saved revisions yet.
+                        </div>
+                      ) : (
+                        transcriptRevisions.map((revision, index) => (
+                          <div
+                            className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2"
+                            key={revision.id}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="font-medium text-foreground text-sm">
+                                  Revision {revision.revision_number}
+                                </p>
+                                <p className="mt-1 text-muted-foreground text-xs">
+                                  {formatRevisionReason(revision)}
+                                </p>
+                                <p className="mt-1 text-muted-foreground/80 text-[11px]">
+                                  {formatRevisionTimestamp(revision.created_at)}
+                                </p>
+                              </div>
+                              {index === 0 ? (
+                                <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 font-medium text-[11px] text-emerald-200">
+                                  Current
+                                </span>
+                              ) : (
+                                <button
+                                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-muted-foreground text-xs transition hover:bg-white/10 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                                  disabled={
+                                    restoreTranscriptRevisionMutation.isPending
+                                  }
+                                  onClick={() =>
+                                    handleRestoreRevision(revision.id)
+                                  }
+                                  type="button"
+                                >
+                                  Restore revision {revision.revision_number}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <button
                 className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
                 onClick={() => setMenuOpen(!menuOpen)}
                 type="button"
               >
-                Export
+                {exportingFormat
+                  ? `Preparing ${getExportFormatLabel(exportingFormat)}...`
+                  : "Export"}
               </button>
               {menuOpen && (
                 <div className="panel absolute right-0 z-10 mt-2 w-56 origin-top-right rounded-[1.25rem] border-white/10 bg-card/95 p-2 focus:outline-none">
@@ -840,36 +1144,77 @@ export default function TranscriptList({
                     <button
                       className="block w-full rounded-xl px-3 py-2 text-left text-muted-foreground text-sm transition hover:bg-white/5 hover:text-foreground"
                       onClick={() => {
-                        handleDownloadTranscript("txt");
+                        void handleDownloadTranscript("txt");
                         setMenuOpen(false);
                       }}
                       role="menuitem"
                       type="button"
+                      disabled={Boolean(exportingFormat)}
                     >
                       Download as TXT
                     </button>
                     <button
                       className="block w-full rounded-xl px-3 py-2 text-left text-muted-foreground text-sm transition hover:bg-white/5 hover:text-foreground"
                       onClick={() => {
-                        handleDownloadTranscript("srt");
+                        void handleDownloadTranscript("srt");
                         setMenuOpen(false);
                       }}
                       role="menuitem"
                       type="button"
+                      disabled={Boolean(exportingFormat)}
                     >
                       Download as SRT
                     </button>
                     <button
                       className="block w-full rounded-xl px-3 py-2 text-left text-muted-foreground text-sm transition hover:bg-white/5 hover:text-foreground"
                       onClick={() => {
-                        handleDownloadTranscript("vtt");
+                        void handleDownloadTranscript("vtt");
                         setMenuOpen(false);
                       }}
                       role="menuitem"
                       type="button"
+                      disabled={Boolean(exportingFormat)}
                     >
                       Download as VTT
                     </button>
+                    <button
+                      className="block w-full rounded-xl px-3 py-2 text-left text-muted-foreground text-sm transition hover:bg-white/5 hover:text-foreground"
+                      onClick={() => {
+                        void handleDownloadTranscript("json");
+                        setMenuOpen(false);
+                      }}
+                      role="menuitem"
+                      type="button"
+                      disabled={Boolean(exportingFormat)}
+                    >
+                      Download as JSON
+                    </button>
+                    <button
+                      className="block w-full rounded-xl px-3 py-2 text-left text-muted-foreground text-sm transition hover:bg-white/5 hover:text-foreground"
+                      onClick={() => {
+                        void handleDownloadTranscript("ass");
+                        setMenuOpen(false);
+                      }}
+                      role="menuitem"
+                      type="button"
+                      disabled={Boolean(exportingFormat)}
+                    >
+                      Download as ASS
+                    </button>
+                    {!selectedLanguage && (
+                      <button
+                        className="block w-full rounded-xl px-3 py-2 text-left text-muted-foreground text-sm transition hover:bg-white/5 hover:text-foreground"
+                        onClick={() => {
+                          void handleDownloadTranscript("review_package");
+                          setMenuOpen(false);
+                        }}
+                        role="menuitem"
+                        type="button"
+                        disabled={Boolean(exportingFormat)}
+                      >
+                        Download review package
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -927,6 +1272,19 @@ export default function TranscriptList({
             )}
         </div>
 
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-muted-foreground">
+            {exportingFormat
+              ? `Preparing ${getExportFormatLabel(exportingFormat)} download from the backend`
+              : "Backend-generated exports stay aligned with the saved review state"}
+          </span>
+          {exportError ? (
+            <span className="rounded-full border border-destructive/20 bg-destructive/10 px-3 py-2 text-destructive">
+              {exportError}
+            </span>
+          ) : null}
+        </div>
+
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
             <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
@@ -957,6 +1315,147 @@ export default function TranscriptList({
               {activePlayheadLabel}
             </p>
           </div>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+          <section className="rounded-2xl border border-white/8 bg-white/5 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
+                  Review status
+                </p>
+                <p className="mt-2 text-foreground text-sm">
+                  {currentReviewLabel}
+                </p>
+              </div>
+              <select
+                className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-foreground text-sm"
+                onChange={(event) =>
+                  setReviewStatusDraft(
+                    event.target.value as
+                      | "approved"
+                      | "draft"
+                      | "in_review"
+                      | "needs_changes"
+                  )
+                }
+                value={reviewStatusDraft}
+              >
+                <option value="draft">Draft</option>
+                <option value="in_review">In review</option>
+                <option value="approved">Approved</option>
+                <option value="needs_changes">Needs changes</option>
+              </select>
+            </div>
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+              <input
+                className="flex-1 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm placeholder:text-muted-foreground/80"
+                onChange={(event) => setReviewAssigneeDraft(event.target.value)}
+                placeholder="Assignee or reviewer"
+                type="text"
+                value={reviewAssigneeDraft}
+              />
+              <button
+                className="rounded-full border border-primary/25 bg-primary/10 px-4 py-2 font-medium text-primary text-sm transition hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={updateTranscriptReviewMutation.isPending}
+                onClick={handleSaveReviewState}
+                type="button"
+              >
+                Save review
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-white/8 bg-white/5 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
+                  Review comments
+                </p>
+                <p className="mt-2 text-muted-foreground text-sm">
+                  {commentTargetLabel}
+                </p>
+              </div>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-muted-foreground text-xs">
+                {transcriptComments.length} comment
+                {transcriptComments.length === 1 ? "" : "s"}
+              </span>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3">
+              <textarea
+                className="min-h-[96px] rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-foreground text-sm placeholder:text-muted-foreground/80"
+                onChange={(event) => setCommentDraft(event.target.value)}
+                placeholder="Add a timestamp-linked review note"
+                value={commentDraft}
+              />
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-muted-foreground text-xs">
+                  New comments attach to the active segment when available.
+                </p>
+                <button
+                  className="rounded-full border border-primary/25 bg-primary/10 px-4 py-2 font-medium text-primary text-sm transition hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={
+                    createTranscriptCommentMutation.isPending ||
+                    commentDraft.trim().length === 0
+                  }
+                  onClick={handleCreateComment}
+                  type="button"
+                >
+                  Add comment
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 max-h-52 space-y-3 overflow-y-auto">
+              {transcriptComments.length === 0 ? (
+                <p className="text-muted-foreground text-sm">
+                  No review comments yet.
+                </p>
+              ) : (
+                transcriptComments.map((comment) => (
+                  <div
+                    className="rounded-2xl border border-white/8 bg-background/40 px-4 py-3"
+                    key={comment.id}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <button
+                        className="text-left"
+                        onClick={() =>
+                          onSegmentClick(comment.timestamp_seconds ?? 0)
+                        }
+                        type="button"
+                      >
+                        <p className="font-medium text-foreground text-sm">
+                          {comment.author_name || "Local Reviewer"}
+                        </p>
+                        <p className="mt-1 text-muted-foreground text-xs">
+                          {formatRevisionTimestamp(comment.created_at)}
+                          {comment.timestamp_seconds !== null &&
+                          comment.timestamp_seconds !== undefined
+                            ? ` · ${formatTimeForDownload(comment.timestamp_seconds)}`
+                            : ""}
+                        </p>
+                      </button>
+                      <button
+                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-muted-foreground text-xs transition hover:bg-white/10 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={deleteTranscriptCommentMutation.isPending}
+                        onClick={() =>
+                          deleteTranscriptCommentMutation.mutate(comment.id)
+                        }
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                    <p className="mt-3 text-sm text-slate-200">
+                      {comment.body}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
         </div>
 
         <div className="relative">
@@ -1044,6 +1543,17 @@ export default function TranscriptList({
                 {selectedTranslationDuration}
               </span>
             )}
+            {selectedTranslationHasStyleGuide && (
+              <span className="rounded-full bg-violet-400/15 px-2 py-0.5 font-medium text-violet-100 text-xs">
+                Style guide
+              </span>
+            )}
+            {selectedTranslationGlossaryCount > 0 && (
+              <span className="rounded-full bg-amber-300/15 px-2 py-0.5 font-medium text-amber-100 text-xs">
+                {selectedTranslationGlossaryCount} glossary term
+                {selectedTranslationGlossaryCount === 1 ? "" : "s"}
+              </span>
+            )}
           </div>
           <p className="mt-2 text-sky-100/80 text-sm">
             {selectedTranslationJob.status === "pending" &&
@@ -1082,6 +1592,36 @@ export default function TranscriptList({
                       Detect: {selectedTranslationDetectionDuration}
                     </span>
                   )}
+              </div>
+            )}
+          {selectedTranslationJob.status === "completed" &&
+            selectedTranslationQaMetrics && (
+              <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                <span className="rounded-full bg-white/10 px-2 py-1">
+                  QA: {selectedTranslationQaMetrics.segment_count ?? 0} segments
+                </span>
+                {(selectedTranslationQaMetrics.long_line_warnings ?? 0) > 0 && (
+                  <span className="rounded-full bg-warning/20 px-2 py-1 text-warning">
+                    {selectedTranslationQaMetrics.long_line_warnings} long lines
+                  </span>
+                )}
+                {(selectedTranslationQaMetrics.high_cps_warnings ?? 0) > 0 && (
+                  <span className="rounded-full bg-warning/20 px-2 py-1 text-warning">
+                    {selectedTranslationQaMetrics.high_cps_warnings} fast cues
+                  </span>
+                )}
+                {(selectedTranslationQaMetrics.overlap_warnings ?? 0) > 0 && (
+                  <span className="rounded-full bg-warning/20 px-2 py-1 text-warning">
+                    {selectedTranslationQaMetrics.overlap_warnings} overlaps
+                  </span>
+                )}
+                {(selectedTranslationQaMetrics.missing_speaker_warnings ?? 0) >
+                  0 && (
+                  <span className="rounded-full bg-warning/20 px-2 py-1 text-warning">
+                    {selectedTranslationQaMetrics.missing_speaker_warnings} missing
+                    speaker labels
+                  </span>
+                )}
               </div>
             )}
         </div>
@@ -1189,12 +1729,45 @@ export default function TranscriptList({
               )?.name ?? pendingLanguage}
               . This may take a few moments.
             </p>
+            <div className="mt-5 space-y-4">
+              <label className="block">
+                <span className="mb-2 block font-medium text-foreground text-sm">
+                  Style guide
+                </span>
+                <textarea
+                  className="min-h-24 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-foreground text-sm placeholder:text-muted-foreground/80 focus:border-primary/40 focus:bg-white/8 focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  onChange={(event) =>
+                    setTranslationStyleGuideDraft(event.target.value)
+                  }
+                  placeholder="Optional instructions like tone, terminology preferences, or subtitle style."
+                  value={translationStyleGuideDraft}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-2 block font-medium text-foreground text-sm">
+                  Glossary
+                </span>
+                <textarea
+                  className="min-h-24 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-foreground text-sm placeholder:text-muted-foreground/80 focus:border-primary/40 focus:bg-white/8 focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  onChange={(event) =>
+                    setTranslationGlossaryDraft(event.target.value)
+                  }
+                  placeholder={"One term per line, for example:\nAPI => Schnittstelle\nGPU => GPU"}
+                  value={translationGlossaryDraft}
+                />
+                <p className="mt-2 text-muted-foreground text-xs">
+                  Use one line per entry in the format <code>source =&gt; target</code>.
+                </p>
+              </label>
+            </div>
             <div className="mt-6 flex justify-end space-x-3">
               <button
                 className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
                 onClick={() => {
                   setShowTranslationModal(false);
                   setPendingLanguage(null);
+                  setTranslationStyleGuideDraft("");
+                  setTranslationGlossaryDraft("");
                 }}
                 type="button"
               >

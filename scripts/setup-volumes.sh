@@ -66,25 +66,19 @@ for service in "${SERVICES[@]}"; do
     "api")
         cat >>docker-compose.override.yml <<'EOF'
       - ./data:/app/data
-      - ./common:/app/common
-      - ./services/api_service:/app/api_service
-      - ./services/transcription_service:/app/transcription_service
-      - ./services/summarization_service:/app/summarization_service
+      - ./backend:/app/backend
 EOF
         ;;
     "transcription-worker")
         cat >>docker-compose.override.yml <<'EOF'
       - ./data:/app/data
-      - ./common:/app/common
-      - ./services/transcription_service:/app/transcription_service
+      - ./backend:/app/backend
 EOF
         ;;
     "watcher")
         cat >>docker-compose.override.yml <<'EOF'
       - ./data:/app/data
-      - ./common:/app/common
-      - ./services/api_service:/app/api_service
-      - ./services/watcher_service:/app/watcher_service
+      - ./backend:/app/backend
 EOF
         ;;
     esac

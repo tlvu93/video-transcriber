@@ -1,4 +1,4 @@
-FROM python:3.12.13-slim
+FROM python:3.13.12-slim
 
 WORKDIR /app
 
@@ -7,29 +7,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy common code
-COPY common /app/common
-
-# Copy API service
-COPY services/api_service /app/api_service
+# Copy backend package metadata and runtime code
+COPY pyproject.toml /app/pyproject.toml
+COPY alembic.ini /app/alembic.ini
+COPY alembic /app/alembic
+COPY backend /app/backend
+COPY services/api_service/requirements.lock /app/services/api_service/requirements.lock
 
 # Install required packages
 RUN pip install --no-cache-dir -U pip setuptools wheel
 
-# Install locked dependencies, then install the editable packages without re-resolving.
-RUN pip install --no-cache-dir -r /app/common/requirements.lock
-RUN pip install --no-cache-dir -r /app/api_service/requirements.lock
-RUN pip install --no-cache-dir --no-deps -e /app/common
-RUN pip install --no-cache-dir --no-deps -e /app/api_service
-
-# Create a .pth file to ensure the common package is in the Python path
-RUN echo "/app" > $(python -c "import site; print(site.getsitepackages()[0])")/app.pth
+# Install locked dependencies, then install the backend package without re-resolving.
+RUN pip install --no-cache-dir -r /app/services/api_service/requirements.lock
+RUN pip install --no-cache-dir --no-deps "/app[api]"
 
 # Create necessary directories
 RUN mkdir -p /app/data/videos /app/data/transcriptions /app/data/summaries /app/data/translations /app/data/db
 
-# Set working directory to API service
-WORKDIR /app/api_service
+# Set working directory to the consolidated backend root
+WORKDIR /app
 
-# Run the API service
-CMD ["python", "-m", "api.main"]
+# Run the canonical backend API entrypoint
+CMD ["python", "-m", "backend.app.entrypoints.api"]

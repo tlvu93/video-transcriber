@@ -22,6 +22,26 @@ function buildStreamUrl(
     : "/api/events/stream";
 }
 
+function buildWebSocketUrl(
+  videoId?: string | null,
+  transcriptId?: string | null
+): string {
+  const searchParams = new URLSearchParams();
+
+  if (videoId) {
+    searchParams.set("video_id", videoId);
+  }
+
+  if (transcriptId) {
+    searchParams.set("transcript_id", transcriptId);
+  }
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const queryString = searchParams.toString();
+  const pathname = queryString ? `/api/events/ws?${queryString}` : "/api/events/ws";
+  return `${protocol}//${window.location.host}${pathname}`;
+}
+
 function parseLiveUpdateEvent(rawEvent: string): LiveUpdateEvent | null {
   try {
     return JSON.parse(rawEvent) as LiveUpdateEvent;
@@ -40,33 +60,88 @@ function invalidateQuery(
   });
 }
 
+function subscribeToLiveUpdates(
+  onEvent: (event: LiveUpdateEvent) => void,
+  videoId?: string | null,
+  transcriptId?: string | null
+): () => void {
+  if (typeof window === "undefined") {
+    return () => undefined;
+  }
+
+  let websocket: WebSocket | null = null;
+  let eventSource: EventSource | null = null;
+  let closed = false;
+  let fallbackInitialized = false;
+
+  const handleEventPayload = (rawEvent: string): void => {
+    const event = parseLiveUpdateEvent(rawEvent);
+    if (!event || event.type === "live.keepalive") {
+      return;
+    }
+
+    onEvent(event);
+  };
+
+  const openEventSource = (): void => {
+    if (closed || fallbackInitialized) {
+      return;
+    }
+
+    fallbackInitialized = true;
+    eventSource = new EventSource(buildStreamUrl(videoId, transcriptId));
+    eventSource.onmessage = (message) => {
+      handleEventPayload(message.data);
+    };
+    eventSource.onerror = () => {
+      if (eventSource?.readyState === EventSource.CLOSED) {
+        eventSource.close();
+      }
+    };
+  };
+
+  try {
+    websocket = new WebSocket(buildWebSocketUrl(videoId, transcriptId));
+    websocket.onmessage = (message) => {
+      if (typeof message.data !== "string") {
+        return;
+      }
+
+      handleEventPayload(message.data);
+    };
+    websocket.onerror = () => {
+      if (!fallbackInitialized) {
+        openEventSource();
+      }
+    };
+    websocket.onclose = () => {
+      if (!closed && !fallbackInitialized) {
+        openEventSource();
+      }
+    };
+  } catch (_error) {
+    openEventSource();
+  }
+
+  return () => {
+    closed = true;
+    websocket?.close();
+    eventSource?.close();
+  };
+}
+
 export function useVideoListLiveUpdates(): void {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    const eventSource = new EventSource(buildStreamUrl());
-    eventSource.onmessage = (message) => {
-      const event = parseLiveUpdateEvent(message.data);
-      if (!event) {
-        return;
-      }
-
+    return subscribeToLiveUpdates((event) => {
       if (event.type === "video.created" || event.type === "video.updated") {
         invalidateQuery(
           (queryKey) => queryClient.invalidateQueries({ queryKey }),
           ["videos"]
         );
       }
-    };
-    eventSource.onerror = () => {
-      if (eventSource.readyState === EventSource.CLOSED) {
-        eventSource.close();
-      }
-    };
-
-    return () => {
-      eventSource.close();
-    };
+    });
   }, [queryClient]);
 }
 
@@ -81,13 +156,8 @@ export function useVideoDetailLiveUpdates(
       return undefined;
     }
 
-    const eventSource = new EventSource(buildStreamUrl(videoId, transcriptId));
-    eventSource.onmessage = (message) => {
-      const event = parseLiveUpdateEvent(message.data);
-      if (!event) {
-        return;
-      }
-
+    return subscribeToLiveUpdates(
+      (event) => {
       const invalidate = (queryKey: readonly unknown[]) =>
         invalidateQuery(
           (currentQueryKey) =>
@@ -155,15 +225,33 @@ export function useVideoDetailLiveUpdates(
         default:
           break;
       }
-    };
-    eventSource.onerror = () => {
-      if (eventSource.readyState === EventSource.CLOSED) {
-        eventSource.close();
-      }
-    };
-
-    return () => {
-      eventSource.close();
-    };
+      },
+      videoId,
+      transcriptId
+    );
   }, [queryClient, transcriptId, videoId]);
+}
+
+export function useUnifiedJobLiveUpdates(): void {
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    return subscribeToLiveUpdates((event) => {
+      if (event.type !== "job.status.changed") {
+        return;
+      }
+
+      invalidateQuery(
+        (queryKey) => queryClient.invalidateQueries({ queryKey }),
+        ["unifiedJobs"]
+      );
+
+      if (event.job_id) {
+        invalidateQuery(
+          (queryKey) => queryClient.invalidateQueries({ queryKey }),
+          ["jobAttempts", event.job_id]
+        );
+      }
+    });
+  }, [queryClient]);
 }

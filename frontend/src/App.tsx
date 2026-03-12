@@ -11,6 +11,7 @@ import { AppShellProvider } from "./components/AppShellContext";
 import GlobalSearch from "./components/GlobalSearch";
 import SearchModal from "./components/SearchModal";
 import UploadModal from "./components/UploadModal";
+import JobsPage from "./pages/JobsPage";
 import VideoDetailPage from "./pages/VideoDetailPage";
 import VideoListPage from "./pages/VideoListPage";
 
@@ -65,6 +66,15 @@ export default function App() {
                   </div>
                 </Link>
 
+                <nav className="hidden items-center gap-2 md:flex">
+                  <Link
+                    className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
+                    to="/jobs"
+                  >
+                    Jobs
+                  </Link>
+                </nav>
+
                 <div className="hidden min-w-0 flex-1 lg:block lg:max-w-xl">
                   <GlobalSearch />
                 </div>
@@ -101,6 +111,7 @@ export default function App() {
             <main className="relative z-10">
               <Routes>
                 <Route element={<VideoListPage />} path="/" />
+                <Route element={<JobsPage />} path="/jobs" />
                 <Route element={<VideoDetailPage />} path="/videos/:id" />
                 <Route element={<Navigate replace to="/" />} path="*" />
               </Routes>

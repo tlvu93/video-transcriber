@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.js";
 
 :root {
   --background: 10 14 21;
@@ -88,11 +87,11 @@ textarea {
   }
 
   .panel-elevated {
-    @apply panel shadow-glow;
+    @apply rounded-[1.5rem] border border-border/80 bg-card/85 shadow-panel shadow-glow backdrop-blur-sm;
   }
 
   .stat-card {
-    @apply panel relative overflow-hidden p-5;
+    @apply relative overflow-hidden rounded-[1.5rem] border border-border/80 bg-card/85 p-5 shadow-panel backdrop-blur-sm;
   }
 
   .status-chip {

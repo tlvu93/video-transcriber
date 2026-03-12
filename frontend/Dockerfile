@@ -1,5 +1,5 @@
 # Build stage
-FROM node:22.22.1-alpine AS build
+FROM node:24.14.0-alpine AS build
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM nginx:alpine
+FROM nginx:1.28.2-alpine
 
 # Copy the built app from the build stage
 COPY --from=build /app/dist /usr/share/nginx/html

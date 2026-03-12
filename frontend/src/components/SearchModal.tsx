@@ -28,10 +28,21 @@ export default function SearchModal({
   onClose,
   onOpen,
 }: SearchModalProps) {
+  const [languageFilter, setLanguageFilter] = useState("");
   const [query, setQuery] = useState("");
+  const [reviewStatusFilter, setReviewStatusFilter] = useState<
+    "all" | "approved" | "draft" | "in_review" | "needs_changes"
+  >("all");
+  const [speakerFilter, setSpeakerFilter] = useState("");
+  const [videoTitleFilter, setVideoTitleFilter] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const navigate = useNavigate();
   const debouncedQuery = useDebouncedValue(query, 250);
+  const hasStructuredFilters =
+    languageFilter.trim().length > 0 ||
+    reviewStatusFilter !== "all" ||
+    speakerFilter.trim().length > 0 ||
+    videoTitleFilter.trim().length > 0;
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent): void {
@@ -61,12 +72,33 @@ export default function SearchModal({
     }
 
     setQuery("");
+    setLanguageFilter("");
+    setReviewStatusFilter("all");
+    setSpeakerFilter("");
+    setVideoTitleFilter("");
   }, [isOpen]);
 
   const searchQuery = useQuery({
-    queryKey: ["search-modal", debouncedQuery],
-    queryFn: () => searchTranscripts(debouncedQuery),
-    enabled: isOpen && debouncedQuery.trim().length >= 2,
+    queryKey: [
+      "search-modal",
+      debouncedQuery,
+      languageFilter,
+      reviewStatusFilter,
+      speakerFilter,
+      videoTitleFilter,
+    ],
+    queryFn: () =>
+      searchTranscripts({
+        query: debouncedQuery,
+        languageCode: languageFilter.trim() || undefined,
+        reviewStatus:
+          reviewStatusFilter === "all" ? undefined : reviewStatusFilter,
+        speaker: speakerFilter.trim() || undefined,
+        videoTitle: videoTitleFilter.trim() || undefined,
+      }),
+    enabled:
+      isOpen &&
+      (debouncedQuery.trim().length >= 2 || hasStructuredFilters),
   });
 
   function handleResultClick(videoId: string, startTime: number): void {
@@ -86,6 +118,21 @@ export default function SearchModal({
       .padStart(2, "0")}`;
   }
 
+  function formatReviewStatus(reviewStatus?: string | null): string {
+    switch (reviewStatus) {
+      case "approved":
+        return "Approved";
+      case "draft":
+        return "Draft";
+      case "in_review":
+        return "In review";
+      case "needs_changes":
+        return "Needs changes";
+      default:
+        return "Review";
+    }
+  }
+
   if (!isOpen) {
     return null;
   }
@@ -93,7 +140,7 @@ export default function SearchModal({
   const results = searchQuery.data ?? [];
   let modalContent: ReactNode;
 
-  if (!query.trim()) {
+  if (!query.trim() && !hasStructuredFilters) {
     modalContent = (
       <div className="px-6 py-12 text-center">
         <p className="font-semibold text-primary/80 text-sm uppercase tracking-[0.24em]">
@@ -113,6 +160,9 @@ export default function SearchModal({
           </span>
           <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
             Start typing to search all transcripts
+          </span>
+          <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
+            Filter by speaker, language, review state, or video title
           </span>
         </div>
       </div>
@@ -164,6 +214,16 @@ export default function SearchModal({
                   {result.speaker ? (
                     <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 font-semibold text-[10px] text-muted-foreground uppercase tracking-[0.18em]">
                       {result.speaker}
+                    </span>
+                  ) : null}
+                  {result.language_code ? (
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 font-semibold text-[10px] text-muted-foreground uppercase tracking-[0.18em]">
+                      {result.language_code}
+                    </span>
+                  ) : null}
+                  {result.review_status ? (
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 font-semibold text-[10px] text-muted-foreground uppercase tracking-[0.18em]">
+                      {formatReviewStatus(result.review_status)}
                     </span>
                   ) : null}
                 </div>
@@ -230,6 +290,49 @@ export default function SearchModal({
               Esc
             </button>
           </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <input
+              className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm placeholder:text-muted-foreground/80"
+              onChange={(event) => setVideoTitleFilter(event.target.value)}
+              placeholder="Video title"
+              type="text"
+              value={videoTitleFilter}
+            />
+            <input
+              className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm placeholder:text-muted-foreground/80"
+              onChange={(event) => setSpeakerFilter(event.target.value)}
+              placeholder="Speaker"
+              type="text"
+              value={speakerFilter}
+            />
+            <input
+              className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm placeholder:text-muted-foreground/80"
+              onChange={(event) => setLanguageFilter(event.target.value)}
+              placeholder="Language code"
+              type="text"
+              value={languageFilter}
+            />
+            <select
+              className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm"
+              onChange={(event) =>
+                setReviewStatusFilter(
+                  event.target.value as
+                    | "all"
+                    | "approved"
+                    | "draft"
+                    | "in_review"
+                    | "needs_changes"
+                )
+              }
+              value={reviewStatusFilter}
+            >
+              <option value="all">All review states</option>
+              <option value="draft">Draft</option>
+              <option value="in_review">In review</option>
+              <option value="approved">Approved</option>
+              <option value="needs_changes">Needs changes</option>
+            </select>
+          </div>
         </div>
 
         <div className="max-h-[65vh] overflow-y-auto">{modalContent}</div>
@@ -241,7 +344,7 @@ export default function SearchModal({
               open
             </span>
           ) : (
-            <span>Search every indexed transcript from one place</span>
+            <span>Search every indexed transcript with transcript-state filters</span>
           )}
         </div>
       </div>

@@ -1,3 +1,4 @@
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type UserConfig } from "vite";
 import type { InlineConfig } from "vitest/node";
@@ -9,13 +10,14 @@ interface AppViteConfig extends UserConfig {
 }
 
 const config: AppViteConfig = {
-  plugins: [react()],
+  plugins: [tailwindcss(), react()],
   server: {
     proxy: {
       "/api": {
         target: "http://localhost:8000",
         changeOrigin: true,
         rewrite: (path) => path.replace(API_PREFIX_PATTERN, ""),
+        ws: true,
       },
     },
   },
