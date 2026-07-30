@@ -21,7 +21,7 @@ services:
         max-file: "3"
 
   postgres:
-    image: postgres:18.3
+    image: postgres:18.4
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -211,7 +211,7 @@ services:
         max-file: "3"
 
   ollama:
-    image: ollama/ollama:0.13.5
+    image: ollama/ollama:0.32.1
     environment:
       - LLM_MODEL=${LLM_MODEL:-qwen3:14b}
       - SUMMARIZATION_LLM_MODEL=${SUMMARIZATION_LLM_MODEL:-}
