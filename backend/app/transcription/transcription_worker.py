@@ -1,3 +1,4 @@
+import contextlib
 import gc
 import logging
 import os
@@ -7,10 +8,10 @@ import time
 import traceback
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
 
 import torch
 import whisperx
+
 from backend.app.domain.jobs import JobCancellationRequestedError
 from backend.app.domain.records import resolve_video_storage_path
 from backend.app.runtime.metrics import record_metric_event
@@ -62,7 +63,7 @@ def torch_load_compatibility_mode():
 def load_whisperx_model_with_fallback(
     preferred_model_name: str,
     device: str,
-) -> Tuple[object, str, str]:
+) -> tuple[object, str, str]:
     fallback_model_names = [preferred_model_name, "small", "tiny"]
     model_candidates = []
     for model_name in fallback_model_names:
@@ -70,7 +71,7 @@ def load_whisperx_model_with_fallback(
             model_candidates.append(model_name)
 
     base_compute_type = WHISPERX_COMPUTE_TYPE or ("float16" if device == "cuda" else "int8")
-    last_error: Optional[Exception] = None
+    last_error: Exception | None = None
 
     for model_name in model_candidates:
         compute_type = WHISPERX_COMPUTE_TYPE or ("int8" if model_name == "tiny" else base_compute_type)
@@ -96,7 +97,7 @@ def load_whisperx_model_with_fallback(
     raise last_error
 
 
-def select_whisperx_model_name(filepath: Optional[str] = None) -> str:
+def select_whisperx_model_name(filepath: str | None = None) -> str:
     if WHISPERX_MODEL_NAME:
         return WHISPERX_MODEL_NAME
 
@@ -209,12 +210,12 @@ def get_whisperx_model():
         return _model, _device
 
 
-def find_video_file(filename: str, storage_path: Optional[str] = None) -> str:
+def find_video_file(filename: str, storage_path: str | None = None) -> str:
     """Resolve a video file from the canonical storage backend."""
     return resolve_video_storage_path(filename, storage_path=storage_path)
 
 
-def coerce_datetime(raw_value: object) -> Optional[datetime]:
+def coerce_datetime(raw_value: object) -> datetime | None:
     if isinstance(raw_value, datetime):
         return raw_value
     if isinstance(raw_value, str):
@@ -247,22 +248,20 @@ def extract_audio(video_path: str) -> str:
             "-y",
             audio_path,
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cmd, check=True, capture_output=True)
         return audio_path
     except subprocess.CalledProcessError as e:
         logger.error(f"ffmpeg error: {e.stderr.decode('utf-8', errors='replace')}")
-        raise ValueError(f"Failed to extract audio from video: {video_path}")
+        raise ValueError(f"Failed to extract audio from video: {video_path}") from e
     except Exception as e:
         logger.error(f"Unexpected error during audio extraction: {str(e)}")
         if os.path.exists(audio_path):
-            try:
+            with contextlib.suppress(Exception):
                 os.remove(audio_path)
-            except Exception:
-                pass
         raise
 
 
-def extract_text_from_segments(segments: List[Dict]) -> str:
+def extract_text_from_segments(segments: list[dict]) -> str:
     """Extract and join text from segments."""
     if not segments:
         return ""
@@ -297,7 +296,7 @@ def get_whisperx_model_for_file(filepath: str):
         return _model, _device
 
 
-def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict], Optional[str]]:
+def transcribe_with_whisperx(filepath: str) -> tuple[str, list[dict], str | None]:
     """Transcribe audio/video file using WhisperX."""
     audio_path = None
 
@@ -338,7 +337,7 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict], Optional[s
                     raise ValueError(f"Audio file is empty or invalid: {filepath_to_process}")
             except Exception as e:
                 logger.error(f"Error loading audio: {str(e)}")
-                raise ValueError(f"Failed to load audio: {str(e)}")
+                raise ValueError(f"Failed to load audio: {str(e)}") from e
 
             # Transcribe with memory-optimized batch size
             # Use smaller batch size for .mov files to reduce memory usage
@@ -423,7 +422,7 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict], Optional[s
                 result = whisperx.assign_word_speakers(diarize_segments, result)
 
                 # Log the number of speakers identified
-                speakers = set([s.get("speaker") for s in result["segments"] if "speaker" in s])
+                speakers = {s.get("speaker") for s in result["segments"] if "speaker" in s}
                 logger.info(f"Speaker diarization completed. Identified {len(speakers)} speakers.")
             except Exception as e:
                 logger.warning(f"Speaker diarization unavailable: {str(e)}")
@@ -441,13 +440,11 @@ def transcribe_with_whisperx(filepath: str) -> Tuple[str, List[Dict], Optional[s
     finally:
         # Clean up temporary audio file
         if audio_path and os.path.exists(audio_path):
-            try:
+            with contextlib.suppress(Exception):
                 os.remove(audio_path)
-            except Exception:
-                pass
 
 
-def format_segments(segments: List[Dict]) -> Optional[List[Dict]]:
+def format_segments(segments: list[dict]) -> list[dict] | None:
     """Format segments for database storage."""
     if not segments:
         return None
@@ -487,7 +484,7 @@ def process_transcription_job(job_id: str, worker_id: str) -> bool:
     transcript_created = False
     video_id = None
     language_code = None
-    video_created_at: Optional[datetime] = None
+    video_created_at: datetime | None = None
 
     try:
         logger.info(f"Starting processing of transcription job {job_id}")
@@ -550,24 +547,20 @@ def process_transcription_job(job_id: str, worker_id: str) -> bool:
     except JobCancellationRequestedError:
         logger.info("Cancellation requested for transcription job %s", job_id)
         processing_time = time.time() - start_time
-        try:
+        with contextlib.suppress(Exception):
             complete_transcription_job_api(
                 job_id,
                 worker_id,
                 processing_time,
                 error_details={"error": "Job cancelled by request"},
             )
-        except Exception:
-            pass
 
         if video_id:
-            try:
+            with contextlib.suppress(Exception):
                 update_video_status_api(
                     video_id,
                     "transcribed" if transcript_created else "pending",
                 )
-            except Exception:
-                pass
 
         return False
     except Exception as e:
@@ -576,17 +569,13 @@ def process_transcription_job(job_id: str, worker_id: str) -> bool:
         # Mark job as failed
         error_details = {"error": str(e), "traceback": traceback.format_exc()[:1000]}
 
-        try:
+        with contextlib.suppress(Exception):
             fail_transcription_job_api(job_id, worker_id, error_details=error_details)
-        except Exception:
-            pass
 
         # Update video status if it exists
         if video_id:
-            try:
+            with contextlib.suppress(Exception):
                 update_video_status_api(video_id, "error")
-            except Exception:
-                pass
 
         return False
     finally:

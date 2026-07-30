@@ -1,72 +1,22 @@
 from __future__ import annotations
 
-import logging
-import json
 import io
+import ipaddress
+import json
+import logging
 import os
 import re
 import shutil
+import socket
 import stat
 import tempfile
 import time
 import zipfile
-from datetime import datetime
-from datetime import timedelta
-from typing import Any, Dict, List, Literal, Optional
+from datetime import datetime, timedelta
+from typing import Any, Literal
+from urllib.parse import urlparse
 from uuid import uuid4
 
-from backend.app.api.common import PaginatedResponse, build_paginated_response, paginate_items, paginate_query
-from backend.app.api.job_routes import router as job_router
-from backend.app.api.live_updates import build_live_update_filters, live_update_manager
-from backend.app.domain.events import (
-    EVENT_SUMMARY_CREATED,
-    EVENT_TRANSCRIPT_UPDATED,
-    EVENT_TRANSCRIPTION_CREATED,
-    EVENT_TRANSLATED_TRANSCRIPT_UPDATED,
-    EVENT_TRANSLATION_CREATED,
-    EVENT_VIDEO_CREATED,
-    EVENT_VIDEO_UPDATED,
-    publish_live_update,
-)
-from backend.app.domain.records import (
-    canonicalize_storage_path,
-    create_transcript_revision,
-    find_existing_video,
-    merge_video_metadata,
-    normalize_speaker_aliases,
-    normalize_translation_style_guide,
-    resolve_video_storage_path,
-    serialize_summary,
-    serialize_transcript,
-    serialize_translated_transcript,
-    serialize_video as build_video_response,
-)
-from backend.app.persistence.database import engine, get_db
-from backend.app.persistence.models import (
-    Summary,
-    Transcript,
-    TranscriptComment,
-    TranscriptRevision,
-    TranscriptSegmentSearch,
-    TranslatedTranscript,
-    Video,
-    VideoStorageObject,
-)
-from backend.app.persistence.search_index import search_transcript_segments, sync_transcript_search_rows
-from backend.app.persistence.segment_sync import (
-    build_segments_snapshot_from_rows,
-    build_speaker_alias_snapshot,
-    sync_summary_variants,
-    sync_transcript_segment_rows,
-    sync_transcript_speaker_rows,
-    sync_translated_transcript_localization_rows,
-    sync_translated_transcript_segment_rows,
-    sync_video_storage_objects,
-)
-from backend.app.runtime.config import LIVE_UPDATES_NOTIFY_ENABLED, VIDEO_DIR
-from backend.app.runtime.metrics import record_metric_event, summarize_metric_events
-from backend.app.runtime.observability import bind_request_id, reset_request_id
-from backend.app.runtime.storage import get_storage_backend
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -83,6 +33,70 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
+from backend.app.api.common import PaginatedResponse, build_paginated_response, paginate_items, paginate_query
+from backend.app.api.job_routes import router as job_router
+from backend.app.api.live_updates import live_update_manager
+from backend.app.domain.canonical_metadata import (
+    build_segments_snapshot_from_rows,
+    build_speaker_alias_snapshot,
+)
+from backend.app.domain.events import (
+    EVENT_SUMMARY_CREATED,
+    EVENT_TRANSCRIPT_UPDATED,
+    EVENT_TRANSCRIPTION_CREATED,
+    EVENT_TRANSLATED_TRANSCRIPT_UPDATED,
+    EVENT_TRANSLATION_CREATED,
+    EVENT_VIDEO_CREATED,
+    EVENT_VIDEO_UPDATED,
+    publish_live_update,
+)
+from backend.app.domain.jobs import create_transcription_job_for_video
+from backend.app.domain.records import (
+    canonicalize_storage_path,
+    create_transcript_revision,
+    find_existing_video,
+    merge_video_metadata,
+    normalize_speaker_aliases,
+    normalize_translation_style_guide,
+    resolve_video_storage_path,
+    serialize_summary,
+    serialize_transcript,
+    serialize_translated_transcript,
+)
+from backend.app.domain.records import (
+    serialize_video as build_video_response,
+)
+from backend.app.persistence.database import engine, get_db
+from backend.app.persistence.models import (
+    Summary,
+    Transcript,
+    TranscriptComment,
+    TranscriptRevision,
+    TranslatedTranscript,
+    Video,
+)
+from backend.app.persistence.search_index import search_transcript_segments, sync_transcript_search_rows
+from backend.app.persistence.segment_sync import (
+    sync_summary_variants,
+    sync_transcript_segment_rows,
+    sync_transcript_speaker_rows,
+    sync_translated_transcript_localization_rows,
+    sync_translated_transcript_segment_rows,
+    sync_video_storage_objects,
+)
+from backend.app.runtime.config import (
+    ALLOWED_UPLOAD_EXTENSIONS,
+    INGEST_RATE_LIMIT_PER_MINUTE,
+    LIVE_UPDATES_NOTIFY_ENABLED,
+    MAX_UPLOAD_SIZE_BYTES,
+    VIDEO_DIR,
+)
+from backend.app.runtime.live_updates import build_live_update_filters
+from backend.app.runtime.metrics import record_metric_event, summarize_metric_events
+from backend.app.runtime.observability import bind_request_id, reset_request_id
+from backend.app.runtime.rate_limit import SlidingWindowRateLimiter
+from backend.app.runtime.storage import get_storage_backend
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("api")
@@ -94,6 +108,18 @@ app.include_router(job_router)
 
 # Ensure directories exist
 os.makedirs(VIDEO_DIR, exist_ok=True)
+
+# Rate limiting for expensive, job-triggering endpoints (uploads, YouTube downloads).
+ingest_rate_limiter = SlidingWindowRateLimiter(max_requests=INGEST_RATE_LIMIT_PER_MINUTE, window_seconds=60.0)
+
+
+def enforce_ingest_rate_limit(request: Request) -> None:
+    client_key = request.client.host if request.client else "unknown"
+    if not ingest_rate_limiter.allow(client_key):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many video ingestion requests. Please wait before trying again.",
+        )
 
 
 @app.middleware("http")
@@ -169,8 +195,8 @@ async def shutdown_live_updates() -> None:
 
 def build_export_segments(
     content: str,
-    segments: Optional[List[Dict[str, Any]]],
-) -> List[Dict[str, Any]]:
+    segments: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
     normalized_segments = [segment for segment in segments or [] if isinstance(segment, dict)]
     if normalized_segments:
         return normalized_segments
@@ -218,9 +244,9 @@ def format_ass_timestamp(seconds: float) -> str:
 
 
 def resolve_export_speaker_name(
-    speaker_id: Optional[str],
-    speaker_aliases: Optional[Dict[str, Any]],
-) -> Optional[str]:
+    speaker_id: str | None,
+    speaker_aliases: dict[str, Any] | None,
+) -> str | None:
     if not speaker_id:
         return None
 
@@ -229,20 +255,20 @@ def resolve_export_speaker_name(
 
 
 def render_txt_export(
-    segments: List[Dict[str, Any]],
+    segments: list[dict[str, Any]],
     *,
     include_timestamps: bool,
     include_speakers: bool,
-    speaker_aliases: Optional[Dict[str, Any]],
+    speaker_aliases: dict[str, Any] | None,
 ) -> str:
-    lines: List[str] = []
+    lines: list[str] = []
 
     for segment in segments:
         text = str(segment.get("text", "")).strip()
         if not text:
             continue
 
-        parts: List[str] = []
+        parts: list[str] = []
         if include_timestamps:
             parts.append(f"[{format_export_timestamp(float(segment.get('start_time', 0) or 0), separator=':')[:-4]}]")
 
@@ -258,8 +284,8 @@ def render_txt_export(
     return "\n\n".join(lines)
 
 
-def render_srt_export(segments: List[Dict[str, Any]]) -> str:
-    blocks: List[str] = []
+def render_srt_export(segments: list[dict[str, Any]]) -> str:
+    blocks: list[str] = []
     block_index = 1
     for segment in segments:
         text = str(segment.get("text", "")).strip()
@@ -268,11 +294,13 @@ def render_srt_export(segments: List[Dict[str, Any]]) -> str:
 
         start_time = float(segment.get("start_time", 0) or 0)
         end_time = float(segment.get("end_time", 0) or start_time + 5)
+        start_label = format_export_timestamp(start_time, separator=",")
+        end_label = format_export_timestamp(end_time, separator=",")
         blocks.append(
             "\n".join(
                 [
                     str(block_index),
-                    f"{format_export_timestamp(start_time, separator=',')} --> {format_export_timestamp(end_time, separator=',')}",
+                    f"{start_label} --> {end_label}",
                     text,
                 ]
             )
@@ -282,7 +310,7 @@ def render_srt_export(segments: List[Dict[str, Any]]) -> str:
     return "\n\n".join(blocks)
 
 
-def render_vtt_export(segments: List[Dict[str, Any]]) -> str:
+def render_vtt_export(segments: list[dict[str, Any]]) -> str:
     blocks = ["WEBVTT"]
     for segment in segments:
         text = str(segment.get("text", "")).strip()
@@ -291,11 +319,13 @@ def render_vtt_export(segments: List[Dict[str, Any]]) -> str:
 
         start_time = float(segment.get("start_time", 0) or 0)
         end_time = float(segment.get("end_time", 0) or start_time + 5)
+        start_label = format_export_timestamp(start_time, separator=".")
+        end_label = format_export_timestamp(end_time, separator=".")
         blocks.append(
             "\n".join(
                 [
                     "",
-                    f"{format_export_timestamp(start_time, separator='.')} --> {format_export_timestamp(end_time, separator='.')}",
+                    f"{start_label} --> {end_label}",
                     text,
                 ]
             )
@@ -305,10 +335,10 @@ def render_vtt_export(segments: List[Dict[str, Any]]) -> str:
 
 
 def render_ass_export(
-    segments: List[Dict[str, Any]],
+    segments: list[dict[str, Any]],
     *,
     include_speakers: bool,
-    speaker_aliases: Optional[Dict[str, Any]],
+    speaker_aliases: dict[str, Any] | None,
 ) -> str:
     header = [
         "[Script Info]",
@@ -317,13 +347,15 @@ def render_ass_export(
         "ScaledBorderAndShadow: yes",
         "",
         "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
         "Style: Default,Arial,42,&H00FFFFFF,&H000000FF,&H00111111,&H66000000,0,0,0,0,100,100,0,0,1,2,0,2,48,48,40,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    dialogue_lines: List[str] = []
+    dialogue_lines: list[str] = []
     for segment in segments:
         text = str(segment.get("text", "")).strip()
         if not text:
@@ -353,10 +385,10 @@ def render_ass_export(
 def build_transcript_export_payload(
     *,
     content: str,
-    segments: Optional[List[Dict[str, Any]]],
-    speaker_aliases: Optional[Dict[str, Any]],
-    extra: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    segments: list[dict[str, Any]] | None,
+    speaker_aliases: dict[str, Any] | None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     payload = {
         "content": content,
         "segments": build_export_segments(content, segments),
@@ -369,13 +401,13 @@ def build_transcript_export_payload(
 
 def build_transcript_export_content(
     content: str,
-    segments: Optional[List[Dict[str, Any]]],
+    segments: list[dict[str, Any]] | None,
     *,
     export_format: Literal["txt", "srt", "vtt", "json", "ass"],
     include_timestamps: bool,
     include_speakers: bool,
-    speaker_aliases: Optional[Dict[str, Any]],
-    export_payload: Optional[Dict[str, Any]] = None,
+    speaker_aliases: dict[str, Any] | None,
+    export_payload: dict[str, Any] | None = None,
 ) -> str:
     normalized_segments = build_export_segments(content, segments)
     if export_format == "srt":
@@ -449,10 +481,10 @@ def build_transcript_review_package(
     *,
     base_filename: str,
     transcript: Transcript,
-    summaries: List[Summary],
-    translated_transcripts: List[TranslatedTranscript],
-    comments: List[TranscriptComment],
-    revisions: List[TranscriptRevision],
+    summaries: list[Summary],
+    translated_transcripts: list[TranslatedTranscript],
+    comments: list[TranscriptComment],
+    revisions: list[TranscriptRevision],
 ) -> bytes:
     normalized_speaker_aliases = normalize_speaker_aliases(transcript.speaker_aliases)
     transcript_payload = build_transcript_export_payload(
@@ -660,6 +692,87 @@ def get_video_storage_path(video: Video, db: Session) -> str:
     return resolved_path
 
 
+def validate_download_url(url: str) -> None:
+    """Basic SSRF guard for the yt-dlp download endpoint.
+
+    Rejects non-http(s) schemes and URLs whose host resolves to a loopback,
+    private, link-local, or otherwise reserved address (this also covers the
+    common cloud metadata endpoint at 169.254.169.254). This is a best-effort,
+    code-level check: it does not protect against TOCTOU DNS rebinding
+    between this check and the request yt-dlp actually issues. Egress
+    network controls are the more robust mitigation for that residual risk.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only http:// and https:// URLs are supported.")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="URL must include a hostname.")
+
+    if hostname.lower() in ("localhost", "localhost.localdomain") or hostname.lower().endswith(".local"):
+        raise HTTPException(status_code=400, detail="URLs targeting local hosts are not allowed.")
+
+    try:
+        resolved_addresses = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
+    except socket.gaierror as error:
+        raise HTTPException(status_code=400, detail=f"Could not resolve host: {hostname}") from error
+
+    for address in resolved_addresses:
+        ip = ipaddress.ip_address(address)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise HTTPException(
+                status_code=400,
+                detail="URLs targeting private, loopback, or link-local addresses are not allowed.",
+            )
+
+
+def validate_upload_filename(filename: str | None) -> str:
+    """Reject uploads whose extension is not on the allowlist; return the validated filename."""
+    if not filename:
+        raise HTTPException(status_code=400, detail="An uploaded file must have a filename.")
+
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"Unsupported file type '{extension or '(none)'}'. "
+                f"Allowed types: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}"
+            ),
+        )
+    return filename
+
+
+def write_upload_with_size_limit(source: UploadFile, destination_path: str, *, max_bytes: int) -> int:
+    """Stream `source` to `destination_path`, aborting (and cleaning up) past `max_bytes`."""
+    total_bytes = 0
+    chunk_size = 1024 * 1024
+    try:
+        with open(destination_path, "wb") as buffer:
+            while True:
+                chunk = source.file.read(chunk_size)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Upload exceeds the maximum allowed size of {max_bytes} bytes.",
+                    )
+                buffer.write(chunk)
+    except HTTPException:
+        if os.path.exists(destination_path):
+            os.remove(destination_path)
+        raise
+    except Exception:
+        if os.path.exists(destination_path):
+            os.remove(destination_path)
+        raise
+
+    return total_bytes
+
+
 def build_upload_storage_target(filename: str, db: Session):
     """Allocate a non-destructive managed-media target for uploaded files."""
     return storage_backend.prepare_upload_target(
@@ -686,8 +799,8 @@ def build_video_library_stats(db: Session) -> VideoLibraryStatsResponse:
 @app.get("/events/stream")
 async def stream_live_updates(
     request: Request,
-    video_id: Optional[str] = None,
-    transcript_id: Optional[str] = None,
+    video_id: str | None = None,
+    transcript_id: str | None = None,
 ):
     filters = build_live_update_filters(video_id=video_id, transcript_id=transcript_id)
     headers = {
@@ -706,8 +819,8 @@ async def stream_live_updates(
 @app.websocket("/events/ws")
 async def websocket_live_updates(
     websocket: WebSocket,
-    video_id: Optional[str] = None,
-    transcript_id: Optional[str] = None,
+    video_id: str | None = None,
+    transcript_id: str | None = None,
 ) -> None:
     filters = build_live_update_filters(video_id=video_id, transcript_id=transcript_id)
     await live_update_manager.stream_websocket(websocket, filters)
@@ -716,15 +829,15 @@ async def websocket_live_updates(
 # Pydantic models for request/response
 class VideoCreate(BaseModel):
     filename: str
-    file_hash: Optional[str] = None
-    video_metadata: Optional[Dict[str, Any]] = None
-    storage_path: Optional[str] = None
+    file_hash: str | None = None
+    video_metadata: dict[str, Any] | None = None
+    storage_path: str | None = None
 
 
 class VideoCheck(BaseModel):
     filename: str
-    file_hash: Optional[str] = None
-    storage_path: Optional[str] = None
+    file_hash: str | None = None
+    storage_path: str | None = None
 
 
 class VideoResponse(BaseModel):
@@ -734,9 +847,9 @@ class VideoResponse(BaseModel):
     filename: str
     status: str
     created_at: Any
-    file_hash: Optional[str] = None
-    video_metadata: Optional[Dict[str, Any]] = None
-    storage_path: Optional[str] = None
+    file_hash: str | None = None
+    video_metadata: dict[str, Any] | None = None
+    storage_path: str | None = None
 
 
 class YoutubeDownloadRequest(BaseModel):
@@ -747,9 +860,9 @@ class SummaryCreate(BaseModel):
     transcript_id: str
     content: str
     content_profile: str = "generic"
-    summary_metadata: Optional[Dict[str, Any]] = None
+    summary_metadata: dict[str, Any] | None = None
     status: str = "completed"
-    variants: Optional[Dict[str, Any]] = None
+    variants: dict[str, Any] | None = None
 
 
 class SummaryResponse(BaseModel):
@@ -757,20 +870,20 @@ class SummaryResponse(BaseModel):
     transcript_id: str
     content: str
     content_profile: str
-    summary_metadata: Dict[str, Any]
+    summary_metadata: dict[str, Any]
     status: str
     created_at: Any
-    variants: Dict[str, str]
+    variants: dict[str, str]
 
 
 class TranslatedTranscriptCreate(BaseModel):
     transcript_id: str
     language: str
     content: str
-    segments: Optional[List[Dict[str, Any]]] = None
-    style_guide: Optional[str] = None
-    glossary_terms: Optional[List[Dict[str, str]]] = None
-    qa_metrics: Optional[Dict[str, Any]] = None
+    segments: list[dict[str, Any]] | None = None
+    style_guide: str | None = None
+    glossary_terms: list[dict[str, str]] | None = None
+    qa_metrics: dict[str, Any] | None = None
     status: str = "completed"
 
 
@@ -781,33 +894,33 @@ class TranslatedTranscriptResponse(BaseModel):
     transcript_id: str
     language: str
     content: str
-    segments: Optional[List[Dict[str, Any]]] = None
-    style_guide: Optional[str] = None
-    glossary_terms: Optional[List[Dict[str, str]]] = None
-    qa_metrics: Optional[Dict[str, Any]] = None
+    segments: list[dict[str, Any]] | None = None
+    style_guide: str | None = None
+    glossary_terms: list[dict[str, str]] | None = None
+    qa_metrics: dict[str, Any] | None = None
     status: str
     created_at: Any
 
 
 class TranscriptSegmentsUpdate(BaseModel):
-    segments: List[Dict[str, Any]]
-    content: Optional[str] = None
+    segments: list[dict[str, Any]]
+    content: str | None = None
 
 
 class TranscriptSpeakerAliasUpdate(BaseModel):
-    speaker_aliases: Dict[str, str]
+    speaker_aliases: dict[str, str]
 
 
 class TranscriptReviewUpdate(BaseModel):
     review_status: Literal["draft", "in_review", "approved", "needs_changes"]
-    review_assignee: Optional[str] = None
+    review_assignee: str | None = None
 
 
 class TranscriptCommentCreate(BaseModel):
-    author_name: Optional[str] = None
+    author_name: str | None = None
     body: str
-    segment_id: Optional[int] = None
-    timestamp_seconds: Optional[float] = None
+    segment_id: int | None = None
+    timestamp_seconds: float | None = None
 
 
 class TranscriptCreate(BaseModel):
@@ -816,11 +929,11 @@ class TranscriptCreate(BaseModel):
     content: str
     format: str = "txt"
     status: str = "completed"
-    language_code: Optional[str] = None
-    speaker_aliases: Optional[Dict[str, str]] = None
+    language_code: str | None = None
+    speaker_aliases: dict[str, str] | None = None
     review_status: str = "draft"
-    review_assignee: Optional[str] = None
-    segments: Optional[List[Dict[str, Any]]] = None
+    review_assignee: str | None = None
+    segments: list[dict[str, Any]] | None = None
 
 
 class TranscriptResponse(BaseModel):
@@ -832,12 +945,12 @@ class TranscriptResponse(BaseModel):
     content: str
     format: str
     status: str
-    language_code: Optional[str] = None
-    speaker_aliases: Optional[Dict[str, str]] = None
+    language_code: str | None = None
+    speaker_aliases: dict[str, str] | None = None
     review_status: str
-    review_assignee: Optional[str] = None
+    review_assignee: str | None = None
     created_at: Any
-    segments: Optional[List[Dict[str, Any]]] = None
+    segments: list[dict[str, Any]] | None = None
 
 
 class TranscriptRevisionResponse(BaseModel):
@@ -848,9 +961,9 @@ class TranscriptRevisionResponse(BaseModel):
     revision_number: int
     reason: str
     content: str
-    speaker_aliases: Optional[Dict[str, str]] = None
+    speaker_aliases: dict[str, str] | None = None
     created_at: Any
-    segments: Optional[List[Dict[str, Any]]] = None
+    segments: list[dict[str, Any]] | None = None
 
 
 class TranscriptCommentResponse(BaseModel):
@@ -858,9 +971,9 @@ class TranscriptCommentResponse(BaseModel):
 
     id: str
     transcript_id: str
-    segment_id: Optional[int] = None
-    timestamp_seconds: Optional[float] = None
-    author_name: Optional[str] = None
+    segment_id: int | None = None
+    timestamp_seconds: float | None = None
+    author_name: str | None = None
     body: str
     created_at: Any
 
@@ -874,8 +987,8 @@ class SearchResultResponse(BaseModel):
     end_time: float
     text: str
     speaker: str
-    language_code: Optional[str] = None
-    review_status: Optional[str] = None
+    language_code: str | None = None
+    review_status: str | None = None
 
 
 class VideoLibraryStatsResponse(BaseModel):
@@ -890,8 +1003,8 @@ class VideoListResponse(PaginatedResponse[VideoResponse]):
 
 
 class VideoUpdate(BaseModel):
-    status: Optional[str] = None
-    video_metadata: Optional[Dict[str, Any]] = None
+    status: str | None = None
+    video_metadata: dict[str, Any] | None = None
 
 
 @app.get("/")
@@ -933,7 +1046,7 @@ def read_metrics(
     return summarize_metric_events(lookback_hours=lookback_hours)
 
 
-@app.post("/videos/")
+@app.post("/videos/", dependencies=[Depends(enforce_ingest_rate_limit)])
 async def upload_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -952,18 +1065,23 @@ async def upload_video(
     """
     logger.info(f"Received video upload: {file.filename}")
 
-    # Save the video file
-    upload_target = build_upload_storage_target(file.filename, db)
+    validated_filename = validate_upload_filename(file.filename)
+    safe_filename = os.path.basename(validated_filename)
+
+    # Save the video file, enforcing the configured size cap while streaming to disk so we
+    # never buffer an arbitrarily large upload fully in memory or on disk before checking it.
+    upload_target = build_upload_storage_target(safe_filename, db)
     try:
         os.makedirs(os.path.dirname(upload_target.local_path), exist_ok=True)
-        with open(upload_target.local_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        write_upload_with_size_limit(file, upload_target.local_path, max_bytes=MAX_UPLOAD_SIZE_BYTES)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error saving video file: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error saving video file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error saving video file: {str(e)}") from e
 
     # Create video record
-    video = Video(filename=file.filename, storage_path=upload_target.storage_uri)
+    video = Video(filename=safe_filename, storage_path=upload_target.storage_uri)
     db.add(video)
     db.flush()
     sync_video_storage_objects(db, video)
@@ -982,7 +1100,11 @@ async def upload_video(
     return build_video_response(video)
 
 
-@app.post("/videos/youtube", response_model=VideoResponse)
+@app.post(
+    "/videos/youtube",
+    response_model=VideoResponse,
+    dependencies=[Depends(enforce_ingest_rate_limit)],
+)
 async def download_youtube_video(
     background_tasks: BackgroundTasks,
     request: YoutubeDownloadRequest,
@@ -991,10 +1113,12 @@ async def download_youtube_video(
     """
     Download a video from YouTube (or other supported sites) and start transcription.
     """
-    import yt_dlp
     import uuid
 
+    import yt_dlp
+
     logger.info(f"Received YouTube download request: {request.url}")
+    validate_download_url(request.url)
 
     # Generate a unique filename using UUID to avoid collisions
     unique_id = str(uuid.uuid4())[:8]
@@ -1038,7 +1162,7 @@ async def download_youtube_video(
             return build_video_response(video)
     except Exception as e:
         logger.error(f"Error downloading YouTube video: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error downloading YouTube video: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error downloading YouTube video: {str(e)}") from e
 
 
 @app.post("/videos/register", response_model=VideoResponse)
@@ -1055,6 +1179,11 @@ async def register_video(video_data: VideoCreate, db: Session = Depends(get_db))
         The created or updated video object
     """
     logger.info(f"Registering video: {video_data.filename}")
+
+    # Never persist a raw client-supplied filename: strip any directory components so it can't
+    # carry path-traversal segments (defense in depth on top of the storage-backend containment
+    # checks in `resolve_video_storage_path`).
+    video_data.filename = os.path.basename(video_data.filename)
 
     # Check if the video file exists
     filename = video_data.filename
@@ -1123,7 +1252,7 @@ async def register_video(video_data: VideoCreate, db: Session = Depends(get_db))
     return build_video_response(video)
 
 
-@app.post("/videos/check", response_model=Optional[VideoResponse])
+@app.post("/videos/check", response_model=VideoResponse | None)
 async def check_video_exists(video_check: VideoCheck, db: Session = Depends(get_db)):
     """
     Check if a video exists in the database by filename or file hash.
@@ -1233,7 +1362,11 @@ async def update_transcript(transcript_id: str, update_data: dict, db: Session =
 
 
 @app.put("/transcripts/{transcript_id}/segments", response_model=TranscriptResponse)
-async def update_transcript_segments(transcript_id: str, update_data: TranscriptSegmentsUpdate, db: Session = Depends(get_db)):
+async def update_transcript_segments(
+    transcript_id: str,
+    update_data: TranscriptSegmentsUpdate,
+    db: Session = Depends(get_db),
+):
     """
     Update the segments (and optionally the full text content) of a transcript.
     Used by the frontend for interactive transcript editing.
@@ -1319,7 +1452,7 @@ async def update_transcript_review(
     return serialize_transcript(transcript)
 
 
-@app.get("/transcripts/{transcript_id}/comments", response_model=List[TranscriptCommentResponse])
+@app.get("/transcripts/{transcript_id}/comments", response_model=list[TranscriptCommentResponse])
 def list_transcript_comments(transcript_id: str, db: Session = Depends(get_db)):
     """
     List transcript comments newest-first.
@@ -1472,8 +1605,8 @@ async def update_video(video_id: str, update_data: VideoUpdate, db: Session = De
 @app.get("/videos/", response_model=VideoListResponse)
 def list_videos(
     status_group: Literal["all", "processing", "ready", "failed"] = Query(default="all"),
-    date_window_days: Optional[int] = Query(default=None, ge=1, le=3650),
-    q: Optional[str] = Query(default=None),
+    date_window_days: int | None = Query(default=None, ge=1, le=3650),
+    q: str | None = Query(default=None),
     sort: Literal["newest", "oldest", "name"] = Query(default="newest"),
     limit: int = Query(default=18, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -1657,7 +1790,7 @@ def download_video(video_id: str, request: Request, db: Session = Depends(get_db
 
 @app.get("/transcripts/", response_model=PaginatedResponse[TranscriptResponse])
 def list_transcripts(
-    video_id: Optional[str] = None,
+    video_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -1816,7 +1949,7 @@ def export_transcript(
     return response
 
 
-@app.get("/transcripts/{transcript_id}/revisions", response_model=List[TranscriptRevisionResponse])
+@app.get("/transcripts/{transcript_id}/revisions", response_model=list[TranscriptRevisionResponse])
 def list_transcript_revisions(transcript_id: str, db: Session = Depends(get_db)):
     """
     List transcript revisions in descending revision order.
@@ -1882,7 +2015,7 @@ async def restore_transcript_revision(
 
 @app.get("/summaries/", response_model=PaginatedResponse[SummaryResponse])
 def list_summaries(
-    transcript_id: Optional[str] = None,
+    transcript_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -2010,8 +2143,8 @@ async def create_translated_transcript(transcript_data: TranslatedTranscriptCrea
 
 @app.get("/translated-transcripts/", response_model=PaginatedResponse[TranslatedTranscriptResponse])
 def list_translated_transcripts(
-    transcript_id: Optional[str] = None,
-    language: Optional[str] = None,
+    transcript_id: str | None = None,
+    language: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -2155,13 +2288,24 @@ def export_translated_transcript(
     return response
 
 
-@app.put("/translated-transcripts/{translated_transcript_id}/segments", response_model=TranslatedTranscriptResponse)
-async def update_translated_transcript_segments(translated_transcript_id: str, update_data: TranscriptSegmentsUpdate, db: Session = Depends(get_db)):
+@app.put(
+    "/translated-transcripts/{translated_transcript_id}/segments",
+    response_model=TranslatedTranscriptResponse,
+)
+async def update_translated_transcript_segments(
+    translated_transcript_id: str,
+    update_data: TranscriptSegmentsUpdate,
+    db: Session = Depends(get_db),
+):
     """
     Update the segments (and optionally the full text content) of a translated transcript.
     Used by the frontend for interactive transcript editing.
     """
-    translated_transcript = db.query(TranslatedTranscript).filter(TranslatedTranscript.id == translated_transcript_id).first()
+    translated_transcript = (
+        db.query(TranslatedTranscript)
+        .filter(TranslatedTranscript.id == translated_transcript_id)
+        .first()
+    )
     if not translated_transcript:
         raise HTTPException(status_code=404, detail=f"Translated transcript not found: {translated_transcript_id}")
 
@@ -2185,13 +2329,13 @@ async def update_translated_transcript_segments(translated_transcript_id: str, u
 @app.get("/search", response_model=PaginatedResponse[SearchResultResponse])
 async def search_transcripts(
     q: str,
-    language_code: Optional[str] = None,
+    language_code: str | None = None,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    review_status: Optional[Literal["draft", "in_review", "approved", "needs_changes"]] = None,
-    speaker: Optional[str] = None,
-    video_id: Optional[str] = None,
-    video_title: Optional[str] = None,
+    review_status: Literal["draft", "in_review", "approved", "needs_changes"] | None = None,
+    speaker: str | None = None,
+    video_id: str | None = None,
+    video_title: str | None = None,
     db: Session = Depends(get_db),
 ):
     """

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Literal, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
@@ -25,7 +26,7 @@ def translate_job_domain_error(error: ValueError) -> HTTPException:
     return HTTPException(status_code=status_code, detail=detail)
 
 
-def _coerce_unified_job(unified_job: UnifiedJob | Mapping[str, Any]) -> Dict[str, Any]:
+def _coerce_unified_job(unified_job: UnifiedJob | Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(unified_job, UnifiedJob):
         return {
             "id": str(unified_job.id),
@@ -57,11 +58,11 @@ def _coerce_unified_job(unified_job: UnifiedJob | Mapping[str, Any]) -> Dict[str
 def project_legacy_job(
     job_type: LegacyJobType,
     unified_job: UnifiedJob | Mapping[str, Any],
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     serialized_job = _coerce_unified_job(unified_job)
     payload = serialized_job.get("payload") or {}
 
-    response: Dict[str, Any] = {
+    response: dict[str, Any] = {
         "id": str(serialized_job.get("legacy_job_id") or serialized_job["id"]),
         "status": serialized_job["status"],
         "created_at": serialized_job["created_at"],
@@ -99,7 +100,7 @@ def get_legacy_job_projection_or_404(
     *,
     job_type: LegacyJobType,
     legacy_job_id: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     unified_job = (
         db.query(UnifiedJob)
         .filter(UnifiedJob.job_type == job_type, UnifiedJob.legacy_job_id == legacy_job_id)
@@ -117,11 +118,11 @@ def list_legacy_job_projections(
     db: Session,
     *,
     job_type: LegacyJobType,
-    status: Optional[str] = None,
-    subject_id: Optional[str] = None,
+    status: str | None = None,
+    subject_id: str | None = None,
     limit: int,
     offset: int,
-) -> tuple[list[Dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int]:
     query = db.query(UnifiedJob).filter(UnifiedJob.job_type == job_type)
     if status:
         query = query.filter(UnifiedJob.status == status)

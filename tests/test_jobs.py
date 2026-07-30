@@ -10,7 +10,6 @@ from backend.app.api.job_views import get_legacy_job_projection_or_404
 from backend.app.persistence.database import Base
 from backend.app.persistence.models import JobAttempt, Transcript, UnifiedJob, Video
 
-
 LEGACY_JOB_TABLES = {
     "transcription_jobs",
     "summarization_jobs",

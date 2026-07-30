@@ -4,8 +4,7 @@ import logging
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
-
+from typing import Any
 
 logger = logging.getLogger("backend.runtime.metrics")
 
@@ -23,8 +22,8 @@ def get_default_metrics_lookback_hours() -> int:
     return int(os.environ.get("METRICS_DEFAULT_LOOKBACK_HOURS", "168"))
 
 
-def normalize_metric_labels(labels: Optional[Dict[str, Any]]) -> Dict[str, str]:
-    normalized: Dict[str, str] = {}
+def normalize_metric_labels(labels: dict[str, Any] | None) -> dict[str, str]:
+    normalized: dict[str, str] = {}
     for key, value in (labels or {}).items():
         normalized_key = str(key).strip()
         if not normalized_key:
@@ -38,8 +37,8 @@ def record_metric_event(
     value: float = 1.0,
     *,
     source: str,
-    labels: Optional[Dict[str, Any]] = None,
-    recorded_at: Optional[datetime] = None,
+    labels: dict[str, Any] | None = None,
+    recorded_at: datetime | None = None,
 ) -> None:
     if not metrics_enabled():
         return
@@ -66,7 +65,7 @@ def record_metric_event(
         logger.warning("Failed to record metric event %s: %s", metric_name, error)
 
 
-def summarize_metric_events(*, lookback_hours: Optional[int] = None) -> Dict[str, Any]:
+def summarize_metric_events(*, lookback_hours: int | None = None) -> dict[str, Any]:
     from backend.app.persistence.database import SessionLocal
     from backend.app.persistence.models import OperationalMetricEvent
 
@@ -84,8 +83,8 @@ def summarize_metric_events(*, lookback_hours: Optional[int] = None) -> Dict[str
     finally:
         db.close()
 
-    metric_summaries: Dict[str, Dict[str, Any]] = {}
-    source_totals: Dict[str, int] = defaultdict(int)
+    metric_summaries: dict[str, dict[str, Any]] = {}
+    source_totals: dict[str, int] = defaultdict(int)
 
     for event in events:
         source_totals[event.metric_source] += 1

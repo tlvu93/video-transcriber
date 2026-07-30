@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Literal, Optional
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -47,7 +47,6 @@ from backend.app.domain.records import normalize_translation_style_guide
 from backend.app.persistence.database import get_db
 from backend.app.persistence.models import JobAttempt, Transcript, UnifiedJob, Video
 
-
 logger = logging.getLogger("api.jobs")
 router = APIRouter()
 
@@ -70,7 +69,7 @@ async def create_transcription_job_endpoint(
     return project_legacy_job("transcription", unified_job)
 
 
-@router.post("/transcription-jobs/claim", response_model=Optional[TranscriptionJobResponse])
+@router.post("/transcription-jobs/claim", response_model=TranscriptionJobResponse | None)
 async def claim_transcription_job(
     request_data: LeaseWorkerRequest,
     db: Session = Depends(get_db),
@@ -99,8 +98,8 @@ async def heartbeat_transcription_job(
 
 @router.get("/transcription-jobs", response_model=PaginatedResponse[TranscriptionJobResponse])
 async def get_transcription_jobs(
-    status: Optional[str] = None,
-    video_id: Optional[str] = None,
+    status: str | None = None,
+    video_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -194,7 +193,7 @@ async def create_summarization_job_endpoint(
     return project_legacy_job("summarization", unified_job)
 
 
-@router.post("/summarization-jobs/claim", response_model=Optional[SummarizationJobResponse])
+@router.post("/summarization-jobs/claim", response_model=SummarizationJobResponse | None)
 async def claim_summarization_job(
     request_data: LeaseWorkerRequest,
     db: Session = Depends(get_db),
@@ -223,8 +222,8 @@ async def heartbeat_summarization_job(
 
 @router.get("/summarization-jobs", response_model=PaginatedResponse[SummarizationJobResponse])
 async def get_summarization_jobs(
-    status: Optional[str] = None,
-    transcript_id: Optional[str] = None,
+    status: str | None = None,
+    transcript_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -317,7 +316,7 @@ async def create_translation_job_endpoint(
     return project_legacy_job("translation", unified_job)
 
 
-@router.post("/translation-jobs/claim", response_model=Optional[TranslationJobResponse])
+@router.post("/translation-jobs/claim", response_model=TranslationJobResponse | None)
 async def claim_translation_job(
     request_data: LeaseWorkerRequest,
     db: Session = Depends(get_db),
@@ -346,8 +345,8 @@ async def heartbeat_translation_job(
 
 @router.get("/translation-jobs", response_model=PaginatedResponse[TranslationJobResponse])
 async def get_translation_jobs(
-    status: Optional[str] = None,
-    transcript_id: Optional[str] = None,
+    status: str | None = None,
+    transcript_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -370,10 +369,10 @@ async def get_translation_job(job_id: str, db: Session = Depends(get_db)):
 
 @router.get("/jobs", response_model=PaginatedResponse[UnifiedJobResponse])
 def list_unified_jobs(
-    job_type: Optional[Literal["summarization", "transcription", "translation"]] = None,
-    status: Optional[str] = None,
-    subject_type: Optional[Literal["transcript", "video"]] = None,
-    subject_id: Optional[str] = None,
+    job_type: Literal["summarization", "transcription", "translation"] | None = None,
+    status: str | None = None,
+    subject_type: Literal["transcript", "video"] | None = None,
+    subject_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -401,7 +400,7 @@ def get_unified_job(job_id: str, db: Session = Depends(get_db)):
     return job
 
 
-@router.get("/jobs/{job_id}/attempts", response_model=List[JobAttemptResponse])
+@router.get("/jobs/{job_id}/attempts", response_model=list[JobAttemptResponse])
 def list_job_attempts(job_id: str, db: Session = Depends(get_db)):
     job = db.query(UnifiedJob).filter(UnifiedJob.id == job_id).first()
     if not job:

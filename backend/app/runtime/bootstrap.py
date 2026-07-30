@@ -10,6 +10,7 @@ from backend.app.runtime.observability import (
     build_log_formatter,
     get_log_level,
 )
+
 SERVICE_PACKAGE_DIRS = (
     Path("services/api_service"),
     Path("services/transcription_service"),

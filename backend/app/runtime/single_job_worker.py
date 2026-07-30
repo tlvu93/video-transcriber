@@ -4,18 +4,18 @@ import logging
 import threading
 import time
 import traceback
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 from backend.app.runtime.job_notifications import (
     should_wake_for_job_type,
     start_job_notification_listener,
 )
 
-
-ClaimJobFn = Callable[[str], Optional[Dict[str, Any]]]
+ClaimJobFn = Callable[[str], dict[str, Any] | None]
 HeartbeatJobFn = Callable[[str, str], None]
 ProcessJobFn = Callable[[str, str], Any]
-DescribeJobFn = Callable[[Dict[str, Any]], str]
+DescribeJobFn = Callable[[dict[str, Any]], str]
 
 
 def run_single_job_polling_worker(
@@ -27,7 +27,7 @@ def run_single_job_polling_worker(
     claim_next_job: ClaimJobFn,
     heartbeat_job: HeartbeatJobFn,
     process_job: ProcessJobFn,
-    describe_claimed_job: Optional[DescribeJobFn] = None,
+    describe_claimed_job: DescribeJobFn | None = None,
 ) -> None:
     logger = logging.getLogger(worker_name)
     stop_event = threading.Event()
@@ -50,7 +50,7 @@ def run_single_job_polling_worker(
             except Exception as error:
                 logger.warning("Failed to heartbeat %s job %s: %s", worker_name, job_id, error)
 
-    def run_claimed_job(job: Dict[str, Any]) -> None:
+    def run_claimed_job(job: dict[str, Any]) -> None:
         nonlocal job_thread
 
         heartbeat_stop_event = threading.Event()

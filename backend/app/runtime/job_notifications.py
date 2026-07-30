@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from backend.app.runtime.config import (
     LIVE_UPDATES_CHANNEL,
@@ -13,12 +14,11 @@ from backend.app.runtime.config import (
     PSYCOPG_CONNINFO,
 )
 
-
 logger = logging.getLogger("backend.runtime.job_notifications")
 WakeEventFilter = Callable[[dict[str, Any]], bool]
 
 
-def _parse_notification_payload(payload: str) -> Optional[dict[str, Any]]:
+def _parse_notification_payload(payload: str) -> dict[str, Any] | None:
     try:
         envelope = json.loads(payload)
     except json.JSONDecodeError:
@@ -41,7 +41,7 @@ def start_job_notification_listener(
     stop_event: threading.Event,
     wake_event: threading.Event,
     should_wake_for_event: WakeEventFilter,
-) -> Optional[threading.Thread]:
+) -> threading.Thread | None:
     if not LIVE_UPDATES_NOTIFY_ENABLED:
         logger.info("Live update notifications disabled; %s will use polling only", listener_name)
         return None

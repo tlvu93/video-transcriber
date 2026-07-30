@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from backend.app.runtime.live_updates import live_update_manager
-
 
 EVENT_VIDEO_UPDATED = "video.updated"
 EVENT_TRANSCRIPT_UPDATED = "transcript.updated"
@@ -31,12 +30,12 @@ async def publish_job_live_update(
     job_id: str,
     status: str,
     *,
-    video_id: Optional[str] = None,
-    transcript_id: Optional[str] = None,
-    worker_id: Optional[str] = None,
-    lease_expires_at: Optional[datetime] = None,
-    progress: Optional[float] = None,
-    attempt_count: Optional[int] = None,
+    video_id: str | None = None,
+    transcript_id: str | None = None,
+    worker_id: str | None = None,
+    lease_expires_at: datetime | None = None,
+    progress: float | None = None,
+    attempt_count: int | None = None,
 ) -> None:
     await publish_live_update(
         EVENT_JOB_STATUS_CHANGED,
@@ -71,12 +70,12 @@ def publish_job_live_update_sync(
     job_id: str,
     status: str,
     *,
-    video_id: Optional[str] = None,
-    transcript_id: Optional[str] = None,
-    worker_id: Optional[str] = None,
-    lease_expires_at: Optional[datetime] = None,
-    progress: Optional[float] = None,
-    attempt_count: Optional[int] = None,
+    video_id: str | None = None,
+    transcript_id: str | None = None,
+    worker_id: str | None = None,
+    lease_expires_at: datetime | None = None,
+    progress: float | None = None,
+    attempt_count: int | None = None,
 ) -> None:
     _dispatch_sync(
         publish_job_live_update(

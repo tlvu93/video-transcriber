@@ -76,3 +76,24 @@ LIVE_UPDATES_CHANNEL = get_live_updates_channel()
 # LLM settings
 LLM_HOST = os.environ.get("LLM_HOST", "http://localhost:11434/api/generate")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3:14b")
+
+# Upload validation
+DEFAULT_ALLOWED_UPLOAD_EXTENSIONS = (
+    ".mp4", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".avi",
+    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg",
+)
+_ALLOWED_UPLOAD_EXTENSIONS_ENV = os.environ.get("ALLOWED_UPLOAD_EXTENSIONS", "")
+ALLOWED_UPLOAD_EXTENSIONS = (
+    tuple(
+        ext.strip().lower()
+        for ext in _ALLOWED_UPLOAD_EXTENSIONS_ENV.split(",")
+        if ext.strip()
+    )
+    if _ALLOWED_UPLOAD_EXTENSIONS_ENV
+    else DEFAULT_ALLOWED_UPLOAD_EXTENSIONS
+)
+# 5 GiB default cap on a single upload, override with MAX_UPLOAD_SIZE_BYTES.
+MAX_UPLOAD_SIZE_BYTES = int(os.environ.get("MAX_UPLOAD_SIZE_BYTES", str(5 * 1024 * 1024 * 1024)))
+
+# Rate limiting for expensive, job-triggering endpoints (per client IP, per process).
+INGEST_RATE_LIMIT_PER_MINUTE = int(os.environ.get("INGEST_RATE_LIMIT_PER_MINUTE", "10"))

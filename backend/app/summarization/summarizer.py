@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import traceback
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -14,7 +15,6 @@ from backend.app.summarization.config import (
     SUMMARY_MAX_TOKENS,
 )
 from backend.app.summarization.ollama_client import get_ollama_client
-
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("summarizer")
@@ -31,51 +31,51 @@ PROFILE_INSTRUCTIONS = {
 
 class SummaryChapter(BaseModel):
     title: str
-    start_time: Optional[float] = None
-    end_time: Optional[float] = None
+    start_time: float | None = None
+    end_time: float | None = None
     summary: str
 
 
 class SummaryHighlight(BaseModel):
     title: str
     detail: str
-    timestamp_seconds: Optional[float] = None
+    timestamp_seconds: float | None = None
 
 
 class SummaryActionItem(BaseModel):
     task: str
-    owner: Optional[str] = None
-    due_hint: Optional[str] = None
+    owner: str | None = None
+    due_hint: str | None = None
 
 
 class SummaryEntity(BaseModel):
     name: str
     entity_type: str
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class StructuredSummaryBundle(BaseModel):
     content_profile: str = "generic"
     headline: str
     overview: str
-    key_points: List[str] = Field(default_factory=list)
-    chapters: List[SummaryChapter] = Field(default_factory=list)
-    highlights: List[SummaryHighlight] = Field(default_factory=list)
-    keywords: List[str] = Field(default_factory=list)
-    action_items: List[SummaryActionItem] = Field(default_factory=list)
-    entities: List[SummaryEntity] = Field(default_factory=list)
-    open_questions: List[str] = Field(default_factory=list)
-    risks: List[str] = Field(default_factory=list)
+    key_points: list[str] = Field(default_factory=list)
+    chapters: list[SummaryChapter] = Field(default_factory=list)
+    highlights: list[SummaryHighlight] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    action_items: list[SummaryActionItem] = Field(default_factory=list)
+    entities: list[SummaryEntity] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
 
 
-def normalize_content_profile(content_profile: Optional[str]) -> str:
+def normalize_content_profile(content_profile: str | None) -> str:
     candidate = (content_profile or SUMMARIZATION_CONTENT_PROFILE or "generic").strip().lower()
     if candidate == "auto":
         return "generic"
     return candidate if candidate in PROFILE_INSTRUCTIONS else "generic"
 
 
-def _format_timestamp_for_prompt(seconds: Optional[float]) -> str:
+def _format_timestamp_for_prompt(seconds: float | None) -> str:
     if seconds is None:
         return "unknown"
 
@@ -85,11 +85,11 @@ def _format_timestamp_for_prompt(seconds: Optional[float]) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
-def _build_segment_cues(transcript_segments: Optional[Sequence[Dict[str, Any]]]) -> str:
+def _build_segment_cues(transcript_segments: Sequence[dict[str, Any]] | None) -> str:
     if not transcript_segments:
         return "No segment timeline cues were available."
 
-    lines: List[str] = []
+    lines: list[str] = []
     total_chars = 0
     for segment in transcript_segments:
         text = " ".join(str(segment.get("text", "")).split())
@@ -115,7 +115,7 @@ def build_structured_summary_prompt(
     *,
     title_hint: str,
     content_profile: str,
-    transcript_segments: Optional[Sequence[Dict[str, Any]]] = None,
+    transcript_segments: Sequence[dict[str, Any]] | None = None,
 ) -> str:
     profile = normalize_content_profile(content_profile)
     profile_instructions = PROFILE_INSTRUCTIONS[profile]
@@ -161,8 +161,8 @@ TRANSCRIPT
 """
 
 
-def _clean_string_list(values: Sequence[str]) -> List[str]:
-    cleaned: List[str] = []
+def _clean_string_list(values: Sequence[str]) -> list[str]:
+    cleaned: list[str] = []
     for value in values:
         normalized = str(value or "").strip()
         if normalized:
@@ -267,7 +267,7 @@ def render_summary_markdown(bundle: StructuredSummaryBundle) -> str:
 """
 
 
-def build_summary_variants(bundle: StructuredSummaryBundle) -> Dict[str, Any]:
+def build_summary_variants(bundle: StructuredSummaryBundle) -> dict[str, Any]:
     return {
         "overview": bundle.overview,
         "key_points": bundle.key_points,
@@ -284,7 +284,7 @@ def build_summary_variants(bundle: StructuredSummaryBundle) -> Dict[str, Any]:
 def generate_fallback_summary_bundle(
     transcript_text: str,
     *,
-    content_profile: Optional[str] = None,
+    content_profile: str | None = None,
 ) -> StructuredSummaryBundle:
     logger.warning("Using fallback summary generation method")
     preview = transcript_text[:500].strip()
@@ -314,8 +314,8 @@ def generate_summary_bundle(
     transcript_text: str,
     video_path: str,
     *,
-    content_profile: Optional[str] = None,
-    transcript_segments: Optional[Sequence[Dict[str, Any]]] = None,
+    content_profile: str | None = None,
+    transcript_segments: Sequence[dict[str, Any]] | None = None,
 ) -> StructuredSummaryBundle:
     basename = os.path.basename(video_path) or "Untitled media"
     normalized_profile = normalize_content_profile(content_profile)
@@ -359,7 +359,7 @@ def create_summary(
     transcript_text: str,
     video_path: str,
     *,
-    content_profile: Optional[str] = None,
+    content_profile: str | None = None,
 ) -> str:
     bundle = generate_summary_bundle(
         transcript_text,
@@ -372,7 +372,7 @@ def create_summary(
 def summarize_from_file(transcript_path: str, video_path: str) -> str:
     logger.info("Summarizing from file: %s", transcript_path)
     try:
-        with open(transcript_path, "r") as file_handle:
+        with open(transcript_path) as file_handle:
             transcript_text = file_handle.read()
         return create_summary(transcript_text, video_path)
     except Exception as error:

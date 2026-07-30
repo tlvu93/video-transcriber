@@ -3,12 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from alembic import command
-from alembic.config import Config
 import sqlalchemy as sa
+from alembic.config import Config
 
 import backend.app.runtime.config as runtime_config
-
+from alembic import command
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 LEGACY_JOB_TABLES = {
@@ -39,6 +38,10 @@ def _reflect_tables(engine: sa.Engine) -> dict[str, sa.Table]:
 
 def _column_names(table: sa.Table) -> set[str]:
     return {column.name for column in table.columns}
+
+
+def _count_rows(connection: sa.Connection, table: sa.Table) -> int:
+    return connection.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()
 
 
 def test_upgrade_from_pre_unified_schema_backfills_canonical_tables(tmp_path):
@@ -199,14 +202,12 @@ def test_upgrade_from_pre_unified_schema_backfills_canonical_tables(tmp_path):
         transcription_job = next(row for row in jobs if row["legacy_job_id"] == "transcription-job-1")
         assert transcription_job["attempt_count"] == 1
 
-        storage_rows = connection.execute(sa.select(sa.func.count()).select_from(tables["video_storage_objects"])).scalar_one()
-        speaker_rows = connection.execute(sa.select(sa.func.count()).select_from(tables["speakers"])).scalar_one()
-        transcript_segment_rows = connection.execute(sa.select(sa.func.count()).select_from(tables["transcript_segments"])).scalar_one()
-        translated_segment_rows = connection.execute(
-            sa.select(sa.func.count()).select_from(tables["translated_transcript_segments"])
-        ).scalar_one()
-        summary_variant_rows = connection.execute(sa.select(sa.func.count()).select_from(tables["summary_variants"])).scalar_one()
-        attempt_rows = connection.execute(sa.select(sa.func.count()).select_from(tables["job_attempts"])).scalar_one()
+        storage_rows = _count_rows(connection, tables["video_storage_objects"])
+        speaker_rows = _count_rows(connection, tables["speakers"])
+        transcript_segment_rows = _count_rows(connection, tables["transcript_segments"])
+        translated_segment_rows = _count_rows(connection, tables["translated_transcript_segments"])
+        summary_variant_rows = _count_rows(connection, tables["summary_variants"])
+        attempt_rows = _count_rows(connection, tables["job_attempts"])
 
         assert storage_rows == 1
         assert speaker_rows == 1

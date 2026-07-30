@@ -1,7 +1,7 @@
 import logging
 import time
 import traceback
-from typing import Any, Dict, Optional
+from typing import Any
 
 from backend.app.domain.jobs import (
     JobCancellationRequestedError,
@@ -27,12 +27,11 @@ from backend.app.summarization.summarizer import (
     render_summary_markdown,
 )
 
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("summarization.worker")
 
 
-def infer_content_profile(video: Optional[Dict[str, Any]]) -> str:
+def infer_content_profile(video: dict[str, Any] | None) -> str:
     if not video:
         return "generic"
 
@@ -55,15 +54,15 @@ def infer_content_profile(video: Optional[Dict[str, Any]]) -> str:
     return "generic"
 
 
-def get_job_from_api(job_id: str) -> Dict[str, Any]:
+def get_job_from_api(job_id: str) -> dict[str, Any]:
     return get_summarization_job(job_id)
 
 
-def get_transcript_from_api(transcript_id: str) -> Dict[str, Any]:
+def get_transcript_from_api(transcript_id: str) -> dict[str, Any]:
     return get_transcript(transcript_id)
 
 
-def get_video_from_api(video_id: str) -> Dict[str, Any]:
+def get_video_from_api(video_id: str) -> dict[str, Any]:
     return get_video(video_id)
 
 
@@ -72,9 +71,9 @@ def create_summary_api(
     content: str,
     *,
     content_profile: str,
-    summary_metadata: Dict[str, Any],
-    variants: Dict[str, Any],
-) -> Dict[str, Any]:
+    summary_metadata: dict[str, Any],
+    variants: dict[str, Any],
+) -> dict[str, Any]:
     return create_summary_record(
         transcript_id,
         content,
@@ -93,8 +92,8 @@ def update_job_status_api(
     job_id: str,
     worker_id: str,
     status: str,
-    processing_time: Optional[float] = None,
-    error_details: Optional[Dict[str, Any]] = None,
+    processing_time: float | None = None,
+    error_details: dict[str, Any] | None = None,
 ) -> None:
     try:
         if status == "completed":
@@ -119,7 +118,7 @@ def update_job_status_api(
         logger.error("Exception traceback: %s", traceback.format_exc())
 
 
-def claim_next_summarization_job_api(worker_id: str) -> Optional[Dict[str, Any]]:
+def claim_next_summarization_job_api(worker_id: str) -> dict[str, Any] | None:
     return claim_next_summarization_job(worker_id)
 
 
@@ -132,7 +131,7 @@ def update_summarization_job_progress_api(
     worker_id: str,
     progress: float,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
+    error_details: dict[str, Any] | None = None,
 ) -> None:
     update_summarization_job_progress(
         job_id,
@@ -148,8 +147,8 @@ def ensure_summarization_job_not_cancelled_api(job_id: str, worker_id: str) -> N
 
 def process_summarization_job(job_id: str, worker_id: str) -> bool:
     start_time = time.time()
-    transcript_id: Optional[str] = None
-    metrics: Dict[str, Any] = {}
+    transcript_id: str | None = None
+    metrics: dict[str, Any] = {}
 
     try:
         job = get_job_from_api(job_id)

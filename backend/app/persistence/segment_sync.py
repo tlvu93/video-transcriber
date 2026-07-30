@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any
 from urllib.parse import urlparse
+
+from sqlalchemy.orm import Session
 
 from backend.app.domain.canonical_metadata import (
     build_glossary_terms_snapshot,
     build_segments_snapshot_from_normalized_segments,
-    build_segments_snapshot_from_rows,
     build_speaker_alias_snapshot,
     normalize_glossary_terms,
     normalize_segments,
@@ -28,7 +29,7 @@ from backend.app.persistence.models import (
     Video,
     VideoStorageObject,
 )
-from sqlalchemy.orm import Session
+
 
 def sync_transcript_segment_rows(db: Session, transcript: Transcript) -> None:
     normalized_segments = normalize_segments(
@@ -275,9 +276,9 @@ def sync_summary_variants(
     db: Session,
     summary: Summary,
     *,
-    variants: Dict[str, Any] | None = None,
+    variants: dict[str, Any] | None = None,
 ) -> None:
-    normalized_variants: Dict[str, str] = {"default": summary.content}
+    normalized_variants: dict[str, str] = {"default": summary.content}
     for variant_type, content in (variants or {}).items():
         normalized_type = str(variant_type or "").strip()
         if not normalized_type or content is None:

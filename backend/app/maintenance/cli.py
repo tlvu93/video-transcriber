@@ -5,7 +5,6 @@ import logging
 
 from backend.app.runtime.bootstrap import bootstrap_service_paths, configure_logging
 
-
 logger = logging.getLogger("backend.maintenance")
 
 

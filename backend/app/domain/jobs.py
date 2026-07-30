@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import and_, or_
@@ -12,7 +12,6 @@ from backend.app.persistence.database import SessionLocal
 from backend.app.persistence.models import JobAttempt, Transcript, UnifiedJob, Video
 from backend.app.runtime.config import JOB_LEASE_DURATION_SECONDS
 from backend.app.runtime.metrics import record_metric_event
-
 
 logger = logging.getLogger("backend.domain.jobs")
 
@@ -70,14 +69,14 @@ def _build_payload(
     job_type: str,
     subject_id: str,
     *,
-    source_language: Optional[str] = None,
-    target_language: Optional[str] = None,
-    content_profile: Optional[str] = None,
-    style_guide: Optional[str] = None,
-    glossary_terms: Optional[list[dict[str, str]]] = None,
-) -> Dict[str, Any]:
+    source_language: str | None = None,
+    target_language: str | None = None,
+    content_profile: str | None = None,
+    style_guide: str | None = None,
+    glossary_terms: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
     spec = _get_job_spec(job_type)
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         spec["subject_key"]: str(subject_id),
     }
 
@@ -102,7 +101,7 @@ def _create_unified_job(
     *,
     job_type: str,
     subject_id: str,
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
 ) -> UnifiedJob:
     spec = _get_job_spec(job_type)
     compatibility_id = str(uuid4())
@@ -124,7 +123,7 @@ def _create_unified_job(
     return unified_job
 
 
-def _get_unified_job(db, job_id: str, *, job_type: Optional[str] = None) -> UnifiedJob:
+def _get_unified_job(db, job_id: str, *, job_type: str | None = None) -> UnifiedJob:
     query = db.query(UnifiedJob).filter(UnifiedJob.id == job_id)
     if job_type:
         query = query.filter(UnifiedJob.job_type == job_type)
@@ -191,7 +190,7 @@ def _start_attempt(unified_job: UnifiedJob, worker_id: str, db, *, now: datetime
     )
 
 
-def _get_active_attempt(unified_job: UnifiedJob, db) -> Optional[JobAttempt]:
+def _get_active_attempt(unified_job: UnifiedJob, db) -> JobAttempt | None:
     return (
         db.query(JobAttempt)
         .filter(
@@ -261,9 +260,9 @@ def _claimable_job_query(job_type: str, db, *, now: datetime):
     )
 
 
-def serialize_job(unified_job: UnifiedJob) -> Dict[str, Any]:
+def serialize_job(unified_job: UnifiedJob) -> dict[str, Any]:
     payload = dict(unified_job.payload or {})
-    serialized_job: Dict[str, Any] = {
+    serialized_job: dict[str, Any] = {
         "id": str(unified_job.id),
         "legacy_job_id": str(unified_job.legacy_job_id),
         "legacy_job_table": unified_job.legacy_job_table,
@@ -288,7 +287,7 @@ def serialize_job(unified_job: UnifiedJob) -> Dict[str, Any]:
 
 
 def _publish_job_update(unified_job: UnifiedJob) -> None:
-    subject_payload: Dict[str, Optional[str]] = {
+    subject_payload: dict[str, str | None] = {
         "video_id": None,
         "transcript_id": None,
     }
@@ -310,7 +309,7 @@ def _publish_job_update(unified_job: UnifiedJob) -> None:
     )
 
 
-def claim_next_job(job_type: str, worker_id: str) -> Optional[Dict[str, Any]]:
+def claim_next_job(job_type: str, worker_id: str) -> dict[str, Any] | None:
     db = SessionLocal()
     try:
         now = _utcnow()
@@ -349,7 +348,7 @@ def claim_next_job(job_type: str, worker_id: str) -> Optional[Dict[str, Any]]:
         db.close()
 
 
-def get_job(job_id: str, *, job_type: Optional[str] = None) -> Dict[str, Any]:
+def get_job(job_id: str, *, job_type: str | None = None) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job(db, job_id, job_type=job_type)
@@ -358,7 +357,7 @@ def get_job(job_id: str, *, job_type: Optional[str] = None) -> Dict[str, Any]:
         db.close()
 
 
-def heartbeat_job(job_id: str, worker_id: str, *, job_type: Optional[str] = None) -> Dict[str, Any]:
+def heartbeat_job(job_id: str, worker_id: str, *, job_type: str | None = None) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job(db, job_id, job_type=job_type)
@@ -377,9 +376,9 @@ def update_job_progress(
     worker_id: str,
     progress: float,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
-    job_type: Optional[str] = None,
-) -> Dict[str, Any]:
+    error_details: dict[str, Any] | None = None,
+    job_type: str | None = None,
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job(db, job_id, job_type=job_type)
@@ -395,7 +394,7 @@ def update_job_progress(
         db.close()
 
 
-def ensure_job_not_cancelled(job_id: str, worker_id: str, *, job_type: Optional[str] = None) -> None:
+def ensure_job_not_cancelled(job_id: str, worker_id: str, *, job_type: str | None = None) -> None:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job(db, job_id, job_type=job_type)
@@ -410,10 +409,10 @@ def complete_job(
     job_id: str,
     worker_id: str,
     *,
-    processing_time: Optional[float] = None,
-    error_details: Optional[Dict[str, Any]] = None,
-    job_type: Optional[str] = None,
-) -> Dict[str, Any]:
+    processing_time: float | None = None,
+    error_details: dict[str, Any] | None = None,
+    job_type: str | None = None,
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job(db, job_id, job_type=job_type)
@@ -461,9 +460,9 @@ def fail_job(
     job_id: str,
     worker_id: str,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
-    job_type: Optional[str] = None,
-) -> Dict[str, Any]:
+    error_details: dict[str, Any] | None = None,
+    job_type: str | None = None,
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job(db, job_id, job_type=job_type)
@@ -488,7 +487,7 @@ def fail_job(
         db.close()
 
 
-def request_job_cancellation(job_id: str) -> Dict[str, Any]:
+def request_job_cancellation(job_id: str) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job(db, job_id)
@@ -516,7 +515,7 @@ def request_job_cancellation(job_id: str) -> Dict[str, Any]:
         db.close()
 
 
-def retry_job(job_id: str) -> Dict[str, Any]:
+def retry_job(job_id: str) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job(db, job_id)
@@ -554,7 +553,7 @@ def get_job_attempts(job_id: str) -> list[JobAttempt]:
         db.close()
 
 
-def create_transcription_job_for_video(video_id: str) -> Dict[str, Any]:
+def create_transcription_job_for_video(video_id: str) -> dict[str, Any]:
     db = SessionLocal()
     try:
         video = db.query(Video).filter(Video.id == video_id).first()
@@ -578,8 +577,8 @@ def create_transcription_job_for_video(video_id: str) -> Dict[str, Any]:
 def create_summarization_job_for_transcript(
     transcript_id: str,
     *,
-    content_profile: Optional[str] = None,
-) -> Dict[str, Any]:
+    content_profile: str | None = None,
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
@@ -624,11 +623,11 @@ def create_summarization_job_for_transcript(
 def create_translation_job_for_transcript(
     transcript_id: str,
     target_language: str,
-    source_language: Optional[str] = None,
+    source_language: str | None = None,
     *,
-    style_guide: Optional[str] = None,
-    glossary_terms: Optional[list[dict[str, str]]] = None,
-) -> Dict[str, Any]:
+    style_guide: str | None = None,
+    glossary_terms: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
@@ -673,15 +672,15 @@ def create_translation_job_for_transcript(
         db.close()
 
 
-def get_transcription_job(job_id: str) -> Dict[str, Any]:
+def get_transcription_job(job_id: str) -> dict[str, Any]:
     return get_job(job_id, job_type="transcription")
 
 
-def claim_next_transcription_job(worker_id: str) -> Optional[Dict[str, Any]]:
+def claim_next_transcription_job(worker_id: str) -> dict[str, Any] | None:
     return claim_next_job("transcription", worker_id)
 
 
-def heartbeat_transcription_job(job_id: str, worker_id: str) -> Dict[str, Any]:
+def heartbeat_transcription_job(job_id: str, worker_id: str) -> dict[str, Any]:
     return heartbeat_job(job_id, worker_id, job_type="transcription")
 
 
@@ -690,8 +689,8 @@ def update_transcription_job_progress(
     worker_id: str,
     progress: float,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return update_job_progress(
         job_id,
         worker_id,
@@ -709,9 +708,9 @@ def complete_transcription_job(
     job_id: str,
     worker_id: str,
     *,
-    processing_time: Optional[float] = None,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    processing_time: float | None = None,
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return complete_job(
         job_id,
         worker_id,
@@ -725,8 +724,8 @@ def fail_transcription_job(
     job_id: str,
     worker_id: str,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return fail_job(
         job_id,
         worker_id,
@@ -735,15 +734,15 @@ def fail_transcription_job(
     )
 
 
-def get_summarization_job(job_id: str) -> Dict[str, Any]:
+def get_summarization_job(job_id: str) -> dict[str, Any]:
     return get_job(job_id, job_type="summarization")
 
 
-def claim_next_summarization_job(worker_id: str) -> Optional[Dict[str, Any]]:
+def claim_next_summarization_job(worker_id: str) -> dict[str, Any] | None:
     return claim_next_job("summarization", worker_id)
 
 
-def heartbeat_summarization_job(job_id: str, worker_id: str) -> Dict[str, Any]:
+def heartbeat_summarization_job(job_id: str, worker_id: str) -> dict[str, Any]:
     return heartbeat_job(job_id, worker_id, job_type="summarization")
 
 
@@ -752,8 +751,8 @@ def update_summarization_job_progress(
     worker_id: str,
     progress: float,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return update_job_progress(
         job_id,
         worker_id,
@@ -771,9 +770,9 @@ def complete_summarization_job(
     job_id: str,
     worker_id: str,
     *,
-    processing_time: Optional[float] = None,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    processing_time: float | None = None,
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return complete_job(
         job_id,
         worker_id,
@@ -787,8 +786,8 @@ def fail_summarization_job(
     job_id: str,
     worker_id: str,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return fail_job(
         job_id,
         worker_id,
@@ -797,15 +796,15 @@ def fail_summarization_job(
     )
 
 
-def get_translation_job(job_id: str) -> Dict[str, Any]:
+def get_translation_job(job_id: str) -> dict[str, Any]:
     return get_job(job_id, job_type="translation")
 
 
-def claim_next_translation_job(worker_id: str) -> Optional[Dict[str, Any]]:
+def claim_next_translation_job(worker_id: str) -> dict[str, Any] | None:
     return claim_next_job("translation", worker_id)
 
 
-def heartbeat_translation_job(job_id: str, worker_id: str) -> Dict[str, Any]:
+def heartbeat_translation_job(job_id: str, worker_id: str) -> dict[str, Any]:
     return heartbeat_job(job_id, worker_id, job_type="translation")
 
 
@@ -814,8 +813,8 @@ def update_translation_job_progress(
     worker_id: str,
     progress: float,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return update_job_progress(
         job_id,
         worker_id,
@@ -833,9 +832,9 @@ def complete_translation_job(
     job_id: str,
     worker_id: str,
     *,
-    processing_time: Optional[float] = None,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    processing_time: float | None = None,
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return complete_job(
         job_id,
         worker_id,
@@ -849,8 +848,8 @@ def fail_translation_job(
     job_id: str,
     worker_id: str,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return fail_job(
         job_id,
         worker_id,
@@ -859,7 +858,7 @@ def fail_translation_job(
     )
 
 
-def retry_legacy_job(job_type: str, legacy_job_id: str) -> Dict[str, Any]:
+def retry_legacy_job(job_type: str, legacy_job_id: str) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job_for_legacy_id(db, job_type, legacy_job_id)
@@ -868,7 +867,7 @@ def retry_legacy_job(job_type: str, legacy_job_id: str) -> Dict[str, Any]:
     return retry_job(str(unified_job.id))
 
 
-def heartbeat_legacy_job(job_type: str, legacy_job_id: str, worker_id: str) -> Dict[str, Any]:
+def heartbeat_legacy_job(job_type: str, legacy_job_id: str, worker_id: str) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job_for_legacy_id(db, job_type, legacy_job_id)
@@ -884,9 +883,9 @@ def complete_legacy_job(
     legacy_job_id: str,
     worker_id: str,
     *,
-    processing_time: Optional[float] = None,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    processing_time: float | None = None,
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job_for_legacy_id(db, job_type, legacy_job_id)
@@ -908,8 +907,8 @@ def fail_legacy_job(
     legacy_job_id: str,
     worker_id: str,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job_for_legacy_id(db, job_type, legacy_job_id)

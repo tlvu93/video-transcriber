@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -11,17 +12,10 @@ from backend.app.domain.canonical_metadata import (
     build_speaker_alias_snapshot,
     normalize_glossary_terms,
     normalize_speaker_aliases,
-    normalize_style_guide as normalize_translation_style_guide,
     resolve_primary_storage_uri,
 )
-from backend.app.persistence.search_index import sync_transcript_search_rows
-from backend.app.persistence.segment_sync import (
-    sync_summary_variants,
-    sync_transcript_segment_rows,
-    sync_transcript_speaker_rows,
-    sync_translated_transcript_segment_rows,
-    sync_translated_transcript_localization_rows,
-    sync_video_storage_objects,
+from backend.app.domain.canonical_metadata import (
+    normalize_style_guide as normalize_translation_style_guide,
 )
 from backend.app.domain.events import (
     EVENT_SUMMARY_CREATED,
@@ -42,14 +36,22 @@ from backend.app.persistence.models import (
     Video,
     VideoStorageObject,
 )
+from backend.app.persistence.search_index import sync_transcript_search_rows
+from backend.app.persistence.segment_sync import (
+    sync_summary_variants,
+    sync_transcript_segment_rows,
+    sync_transcript_speaker_rows,
+    sync_translated_transcript_localization_rows,
+    sync_translated_transcript_segment_rows,
+    sync_video_storage_objects,
+)
 from backend.app.runtime.storage import get_storage_backend
-
 
 logger = logging.getLogger("backend.domain.records")
 storage_backend = get_storage_backend()
 
 
-def serialize_video(video: Video) -> Dict[str, Any]:
+def serialize_video(video: Video) -> dict[str, Any]:
     return {
         "id": str(video.id),
         "filename": video.filename,
@@ -61,7 +63,7 @@ def serialize_video(video: Video) -> Dict[str, Any]:
     }
 
 
-def serialize_transcript(transcript: Transcript) -> Dict[str, Any]:
+def serialize_transcript(transcript: Transcript) -> dict[str, Any]:
     speaker_aliases = (
         build_speaker_alias_snapshot(list(transcript.speakers))
         if transcript.speakers
@@ -88,7 +90,7 @@ def serialize_transcript(transcript: Transcript) -> Dict[str, Any]:
     }
 
 
-def serialize_summary(summary: Summary) -> Dict[str, Any]:
+def serialize_summary(summary: Summary) -> dict[str, Any]:
     variants = {
         variant.variant_type: variant.content
         for variant in (summary.variants or [])
@@ -105,7 +107,7 @@ def serialize_summary(summary: Summary) -> Dict[str, Any]:
     }
 
 
-def serialize_translated_transcript(translated_transcript: TranslatedTranscript) -> Dict[str, Any]:
+def serialize_translated_transcript(translated_transcript: TranslatedTranscript) -> dict[str, Any]:
     segments = (
         build_segments_snapshot_from_rows(list(translated_transcript.segment_rows))
         if translated_transcript.segment_rows
@@ -164,14 +166,14 @@ def create_transcript_revision(db: Session, transcript: Transcript, *, reason: s
     )
 
 
-def canonicalize_storage_path(storage_path: Optional[str]) -> Optional[str]:
+def canonicalize_storage_path(storage_path: str | None) -> str | None:
     return storage_backend.normalize_uri(storage_path)
 
 
 def resolve_video_storage_path(
     filename: str,
     *,
-    storage_path: Optional[str] = None,
+    storage_path: str | None = None,
 ) -> str:
     return storage_backend.resolve_video_path(
         filename,
@@ -180,10 +182,10 @@ def resolve_video_storage_path(
 
 
 def merge_video_metadata(
-    existing_metadata: Optional[Dict[str, Any]],
-    incoming_metadata: Optional[Dict[str, Any]],
-    file_hash: Optional[str],
-) -> Dict[str, Any]:
+    existing_metadata: dict[str, Any] | None,
+    incoming_metadata: dict[str, Any] | None,
+    file_hash: str | None,
+) -> dict[str, Any]:
     merged_metadata = dict(existing_metadata or {})
     if file_hash:
         merged_metadata["file_hash"] = file_hash
@@ -196,9 +198,9 @@ def find_existing_video(
     db: Session,
     *,
     filename: str,
-    storage_path: Optional[str] = None,
-    file_hash: Optional[str] = None,
-) -> tuple[Optional[Video], Optional[str]]:
+    storage_path: str | None = None,
+    file_hash: str | None = None,
+) -> tuple[Video | None, str | None]:
     if storage_path:
         storage_object = (
             db.query(VideoStorageObject)
@@ -223,7 +225,7 @@ def find_existing_video(
     return None, None
 
 
-def get_video(video_id: str) -> Dict[str, Any]:
+def get_video(video_id: str) -> dict[str, Any]:
     db = SessionLocal()
     try:
         video = db.query(Video).filter(Video.id == video_id).first()
@@ -234,7 +236,7 @@ def get_video(video_id: str) -> Dict[str, Any]:
         db.close()
 
 
-def get_transcript(transcript_id: str) -> Dict[str, Any]:
+def get_transcript(transcript_id: str) -> dict[str, Any]:
     db = SessionLocal()
     try:
         transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
@@ -245,7 +247,7 @@ def get_transcript(transcript_id: str) -> Dict[str, Any]:
         db.close()
 
 
-def update_video_status(video_id: str, status: str) -> Dict[str, Any]:
+def update_video_status(video_id: str, status: str) -> dict[str, Any]:
     db = SessionLocal()
     try:
         video = db.query(Video).filter(Video.id == video_id).first()
@@ -267,7 +269,7 @@ def update_video_status(video_id: str, status: str) -> Dict[str, Any]:
         db.close()
 
 
-def update_transcript_status(transcript_id: str, status: str) -> Dict[str, Any]:
+def update_transcript_status(transcript_id: str, status: str) -> dict[str, Any]:
     db = SessionLocal()
     try:
         transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
@@ -293,13 +295,13 @@ def create_transcript_record(
     video_id: str,
     content: str,
     *,
-    segments: Optional[List[Dict[str, Any]]] = None,
-    language_code: Optional[str] = None,
+    segments: list[dict[str, Any]] | None = None,
+    language_code: str | None = None,
     source_type: str = "video",
     format_name: str = "txt",
     status: str = "completed",
     enqueue_summarization: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         video = db.query(Video).filter(Video.id == video_id).first()
@@ -349,10 +351,10 @@ def create_summary_record(
     content: str,
     *,
     content_profile: str = "generic",
-    summary_metadata: Optional[Dict[str, Any]] = None,
+    summary_metadata: dict[str, Any] | None = None,
     status: str = "completed",
-    variants: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    variants: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
@@ -391,12 +393,12 @@ def create_or_update_translated_transcript(
     language: str,
     content: str,
     *,
-    segments: Optional[List[Dict[str, Any]]] = None,
-    style_guide: Optional[str] = None,
-    glossary_terms: Optional[List[Dict[str, Any]]] = None,
-    qa_metrics: Optional[Dict[str, Any]] = None,
+    segments: list[dict[str, Any]] | None = None,
+    style_guide: str | None = None,
+    glossary_terms: list[dict[str, Any]] | None = None,
+    qa_metrics: dict[str, Any] | None = None,
     status: str = "completed",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
@@ -464,10 +466,10 @@ def create_or_update_translated_transcript(
 def register_watched_video(
     *,
     filename: str,
-    file_hash: Optional[str] = None,
-    storage_path: Optional[str] = None,
-    video_metadata: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    file_hash: str | None = None,
+    storage_path: str | None = None,
+    video_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
         requested_storage_path = canonicalize_storage_path(storage_path)

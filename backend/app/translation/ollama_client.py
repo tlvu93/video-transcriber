@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from backend.app.ai.ollama_client import OllamaGenerateClient as SharedOllamaGenerateClient
 from backend.app.translation.config import (
     LLM_HOST,
@@ -27,7 +25,7 @@ class OllamaGenerateClient(SharedOllamaGenerateClient):
         *,
         temperature: float = 0.1,
         max_tokens: int = 1024,
-        stop: Optional[list[str]] = None,
+        stop: list[str] | None = None,
     ) -> str:
         return self.generate_text(
             prompt,
@@ -37,7 +35,7 @@ class OllamaGenerateClient(SharedOllamaGenerateClient):
         )
 
 
-_cached_client: Optional[OllamaGenerateClient] = None
+_cached_client: OllamaGenerateClient | None = None
 
 
 def get_ollama_client(force_refresh: bool = False) -> OllamaGenerateClient:

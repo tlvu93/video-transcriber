@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from backend.app.domain.jobs import (
     claim_next_transcription_job,
@@ -18,7 +18,6 @@ from backend.app.domain.records import (
 )
 from backend.app.transcription.config import VIDEO_DIR
 
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("transcription.api_client")
 
@@ -26,15 +25,15 @@ os.makedirs(VIDEO_DIR, exist_ok=True)
 logger.info("Video directory: %s", VIDEO_DIR)
 
 
-def get_job_from_api(job_id: str) -> Dict[str, Any]:
+def get_job_from_api(job_id: str) -> dict[str, Any]:
     return get_transcription_job(job_id)
 
 
-def claim_next_transcription_job_api(worker_id: str) -> Optional[Dict[str, Any]]:
+def claim_next_transcription_job_api(worker_id: str) -> dict[str, Any] | None:
     return claim_next_transcription_job(worker_id)
 
 
-def heartbeat_transcription_job_api(job_id: str, worker_id: str) -> Optional[Dict[str, Any]]:
+def heartbeat_transcription_job_api(job_id: str, worker_id: str) -> dict[str, Any] | None:
     return heartbeat_transcription_job(job_id, worker_id)
 
 
@@ -43,8 +42,8 @@ def update_transcription_job_progress_api(
     worker_id: str,
     progress: float,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Optional[Dict[str, Any]]:
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     try:
         return update_transcription_job_progress(
             job_id,
@@ -61,7 +60,7 @@ def ensure_transcription_job_not_cancelled_api(job_id: str, worker_id: str) -> N
     ensure_transcription_job_not_cancelled(job_id, worker_id)
 
 
-def get_video_from_api(video_id: str) -> Dict[str, Any]:
+def get_video_from_api(video_id: str) -> dict[str, Any]:
     return get_video(video_id)
 
 
@@ -73,9 +72,9 @@ def update_video_status_api(video_id: str, status: str) -> None:
 def create_transcript_api(
     video_id: str,
     content: str,
-    segments: Optional[List[Dict[str, Any]]] = None,
-    language_code: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    segments: list[dict[str, Any]] | None = None,
+    language_code: str | None = None,
+) -> dict[str, Any] | None:
     try:
         transcript = create_transcript_record(
             video_id,
@@ -94,9 +93,9 @@ def create_transcript_api(
 def complete_transcription_job_api(
     job_id: str,
     worker_id: str,
-    processing_time: Optional[float] = None,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Optional[Dict[str, Any]]:
+    processing_time: float | None = None,
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     try:
         job = complete_transcription_job(
             job_id,
@@ -114,8 +113,8 @@ def complete_transcription_job_api(
 def fail_transcription_job_api(
     job_id: str,
     worker_id: str,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> Optional[Dict[str, Any]]:
+    error_details: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     try:
         job = fail_transcription_job(
             job_id,

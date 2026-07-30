@@ -7,7 +7,6 @@ import uvicorn
 
 from backend.app.runtime.bootstrap import bootstrap_service_paths, configure_logging
 
-
 logger = logging.getLogger("backend.entrypoints.api")
 
 
@@ -15,8 +14,8 @@ def main() -> None:
     bootstrap_service_paths()
     configure_logging()
 
-    from backend.app.persistence.database import init_db
     from backend.app.api.app import app as api_app
+    from backend.app.persistence.database import init_db
 
     logger.info("Starting Video Transcriber API")
     os.makedirs("data/videos", exist_ok=True)

@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import traceback
-from typing import Dict, List, Optional, Sequence
+from collections.abc import Sequence
 
 from backend.app.translation.config import (
     SUPPORTED_LANGUAGES,
@@ -11,17 +11,16 @@ from backend.app.translation.config import (
 )
 from backend.app.translation.ollama_client import get_ollama_client
 
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("translator")
 
 
 def _build_localization_context(
     *,
-    style_guide: Optional[str] = None,
-    glossary_terms: Optional[Sequence[Dict[str, str]]] = None,
+    style_guide: str | None = None,
+    glossary_terms: Sequence[dict[str, str]] | None = None,
 ) -> str:
-    context_blocks: List[str] = []
+    context_blocks: list[str] = []
 
     if style_guide:
         context_blocks.append(f"STYLE GUIDE:\n{style_guide.strip()}")
@@ -81,10 +80,12 @@ def _build_translation_prompt(
     *,
     source_language_name: str,
     target_language_name: str,
-    style_guide: Optional[str] = None,
-    glossary_terms: Optional[Sequence[Dict[str, str]]] = None,
+    style_guide: str | None = None,
+    glossary_terms: Sequence[dict[str, str]] | None = None,
 ) -> str:
-    return f"""You are a professional translator. Translate the following transcript from {source_language_name} to {target_language_name}.
+    localization_context = _build_localization_context(style_guide=style_guide, glossary_terms=glossary_terms)
+    return f"""You are a professional translator. \
+Translate the following transcript from {source_language_name} to {target_language_name}.
 
 IMPORTANT RULES:
 1. Prioritize accuracy and natural readability in the target language over literal translation.
@@ -93,7 +94,7 @@ IMPORTANT RULES:
 4. Do not add or remove information.
 5. Preserve specialized terminology and technical labels when appropriate.
 6. Return only the translated transcript text.
-7. Follow the provided style guide and glossary exactly when they are present.{_build_localization_context(style_guide=style_guide, glossary_terms=glossary_terms)}
+7. Follow the provided style guide and glossary exactly when they are present.{localization_context}
 
 TRANSCRIPT
 {text}
@@ -105,8 +106,8 @@ def translate_text(
     source_language: str,
     target_language: str,
     *,
-    style_guide: Optional[str] = None,
-    glossary_terms: Optional[Sequence[Dict[str, str]]] = None,
+    style_guide: str | None = None,
+    glossary_terms: Sequence[dict[str, str]] | None = None,
 ) -> str:
     if source_language == target_language:
         logger.info(
@@ -141,9 +142,9 @@ def translate_text(
         return text
 
 
-def _chunk_text_batches(texts: Sequence[str]) -> List[List[str]]:
-    batches: List[List[str]] = []
-    current_batch: List[str] = []
+def _chunk_text_batches(texts: Sequence[str]) -> list[list[str]]:
+    batches: list[list[str]] = []
+    current_batch: list[str] = []
     current_chars = 0
 
     for text in texts:
@@ -165,7 +166,7 @@ def _chunk_text_batches(texts: Sequence[str]) -> List[List[str]]:
     return batches
 
 
-def _extract_json_array(response: str) -> List[str]:
+def _extract_json_array(response: str) -> list[str]:
     response_text = response.strip()
     fenced_match = re.search(r"```(?:json)?\s*(.*?)\s*```", response_text, re.DOTALL)
     if fenced_match:
@@ -189,9 +190,9 @@ def translate_texts(
     source_language: str,
     target_language: str,
     *,
-    style_guide: Optional[str] = None,
-    glossary_terms: Optional[Sequence[Dict[str, str]]] = None,
-) -> List[str]:
+    style_guide: str | None = None,
+    glossary_terms: Sequence[dict[str, str]] | None = None,
+) -> list[str]:
     if not texts:
         return []
 
@@ -218,7 +219,7 @@ def translate_texts(
         logger.warning("Failed to initialize translation client: %s", error)
         return list(texts)
 
-    translated_texts: List[str] = []
+    translated_texts: list[str] = []
     batches = _chunk_text_batches(texts)
 
     for batch_index, batch in enumerate(batches, start=1):
@@ -230,7 +231,9 @@ def translate_texts(
             sum(len(item) for item in batch),
         )
 
-        prompt = f"""You are a professional translator. Translate each string in the JSON array from {source_language_name} to {target_language_name}.
+        localization_context = _build_localization_context(style_guide=style_guide, glossary_terms=glossary_terms)
+        prompt = f"""You are a professional translator. \
+Translate each string in the JSON array from {source_language_name} to {target_language_name}.
 
 IMPORTANT RULES:
 1. Return valid JSON only.
@@ -238,7 +241,7 @@ IMPORTANT RULES:
 3. Translate only the text content of each array entry.
 4. Do not add commentary, markdown, code fences, or metadata.
 5. Preserve speaker labels, timestamps, and special terminology when present in the text.
-6. Follow the provided style guide and glossary exactly when they are present.{_build_localization_context(style_guide=style_guide, glossary_terms=glossary_terms)}
+6. Follow the provided style guide and glossary exactly when they are present.{localization_context}
 
 Input JSON:
 {json.dumps(list(batch), ensure_ascii=False)}
@@ -288,8 +291,8 @@ def translate_segments(
     source_language: str,
     target_language: str,
     *,
-    style_guide: Optional[str] = None,
-    glossary_terms: Optional[Sequence[Dict[str, str]]] = None,
+    style_guide: str | None = None,
+    glossary_terms: Sequence[dict[str, str]] | None = None,
 ):
     if not segments:
         return []
@@ -311,7 +314,7 @@ def translate_segments(
     )
 
     translated_segments = []
-    for segment, translated_text in zip(segments, translated_texts):
+    for segment, translated_text in zip(segments, translated_texts, strict=True):
         translated_segment = segment.copy()
         if segment.get("text"):
             translated_segment["text"] = translated_text

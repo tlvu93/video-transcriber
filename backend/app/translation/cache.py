@@ -4,7 +4,7 @@ import logging
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from backend.app.translation.config import LLM_MODEL, TRANSLATION_CACHE_DIR
 
@@ -22,7 +22,7 @@ def ensure_translation_cache_dir() -> Path:
 
 def compute_translation_cache_key(
     transcript_content: str,
-    transcript_segments: Optional[list],
+    transcript_segments: list | None,
     source_language: str,
     target_language: str,
 ) -> str:
@@ -49,7 +49,7 @@ def get_translation_cache_path(cache_key: str) -> Path:
     return ensure_translation_cache_dir() / f"{cache_key}.json"
 
 
-def read_cached_translation(cache_key: str) -> Optional[Dict[str, Any]]:
+def read_cached_translation(cache_key: str) -> dict[str, Any] | None:
     """Read a cached translation payload from disk if it exists."""
     cache_path = get_translation_cache_path(cache_key)
     if not cache_path.exists():
@@ -80,7 +80,7 @@ def write_cached_translation(
     cache_key: str,
     *,
     content: str,
-    segments: Optional[list],
+    segments: list | None,
     source_language: str,
     target_language: str,
     strategy: str,

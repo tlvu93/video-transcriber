@@ -3,7 +3,7 @@ import logging
 import os
 import subprocess
 from fractions import Fraction
-from typing import Any, Dict
+from typing import Any
 
 from backend.app.transcription.config import VIDEO_DIRS
 
@@ -24,7 +24,7 @@ def parse_frame_rate(frame_rate: str) -> float:
         return 0.0
 
 
-def get_video_metadata(filepath: str) -> Dict[str, Any]:
+def get_video_metadata(filepath: str) -> dict[str, Any]:
     """
     Get metadata for a video file using ffprobe.
 

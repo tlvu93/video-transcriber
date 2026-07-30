@@ -4,21 +4,19 @@ import os
 import threading
 import time
 import traceback
-from typing import Optional
 
 from sqlalchemy import text
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from backend.app.persistence.database import engine
 from backend.app.domain.records import register_watched_video
+from backend.app.persistence.database import engine
 from backend.app.runtime.storage import get_storage_backend
 from backend.app.watcher.config import (
     FILE_STABILITY_CHECK_INTERVAL_SECONDS,
     FILE_STABILITY_MAX_WAIT_SECONDS,
     FILE_STABILITY_REQUIRED_CHECKS,
 )
-
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("watcher")
@@ -35,7 +33,7 @@ def calculate_file_hash(file_path: str) -> str:
 
 def wait_for_file_stability(file_path: str) -> bool:
     stable_checks = 0
-    last_size: Optional[int] = None
+    last_size: int | None = None
     deadline = time.time() + FILE_STABILITY_MAX_WAIT_SECONDS
 
     while time.time() < deadline:

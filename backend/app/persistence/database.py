@@ -1,11 +1,12 @@
 import logging
 from pathlib import Path
 
-from backend.app.runtime.config import DATABASE_URL
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+from alembic import command
+from backend.app.runtime.config import DATABASE_URL
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")

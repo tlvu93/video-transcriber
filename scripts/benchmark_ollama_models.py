@@ -9,11 +9,10 @@ import sys
 import textwrap
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib import error, parse, request
-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "benchmarks"
@@ -68,7 +67,8 @@ CONSTRAINTS
 
 {text}
 """
-TRANSLATION_PROMPT_TEMPLATE = """You are a professional translator. Translate each string in the JSON array from {source_language_name} to {target_language_name}.
+TRANSLATION_PROMPT_TEMPLATE = """You are a professional translator. \
+Translate each string in the JSON array from {source_language_name} to {target_language_name}.
 
 IMPORTANT RULES:
 1. Return valid JSON only.
@@ -88,10 +88,10 @@ class TranscriptSample:
     source_label: str
     content: str
     segments: list[dict[str, Any]]
-    transcript_id: Optional[str] = None
-    video_id: Optional[str] = None
+    transcript_id: str | None = None
+    video_id: str | None = None
     language_code: str = "en"
-    created_at: Optional[str] = None
+    created_at: str | None = None
 
 
 def load_env_file(path: Path) -> dict[str, str]:
@@ -137,7 +137,7 @@ def normalize_url(
     return parse.urlunsplit((scheme, netloc, path, parsed.query, parsed.fragment))
 
 
-def parse_models(values: Optional[list[str]], default_model: str) -> list[str]:
+def parse_models(values: list[str] | None, default_model: str) -> list[str]:
     if not values:
         return [default_model]
 
@@ -167,10 +167,10 @@ def display_path(path: Path) -> str:
 def http_json(
     url: str,
     *,
-    payload: Optional[dict[str, Any]] = None,
+    payload: dict[str, Any] | None = None,
     timeout_seconds: int = 60,
 ) -> Any:
-    data: Optional[bytes] = None
+    data: bytes | None = None
     headers = {"Accept": "application/json"}
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -255,7 +255,7 @@ def load_sample_from_file(path: Path) -> TranscriptSample:
     return TranscriptSample(source_label=str(path), content=raw_text.strip(), segments=[])
 
 
-def parse_created_at(value: Optional[str]) -> float:
+def parse_created_at(value: str | None) -> float:
     if not value:
         return 0.0
     try:
@@ -438,7 +438,7 @@ def evaluate_translation_output(output_text: str, expected_items: int) -> dict[s
         }
 
 
-def safe_ollama_duration_seconds(response_payload: dict[str, Any]) -> Optional[float]:
+def safe_ollama_duration_seconds(response_payload: dict[str, Any]) -> float | None:
     duration = response_payload.get("total_duration")
     if isinstance(duration, int):
         return duration / 1_000_000_000
@@ -672,13 +672,13 @@ def build_markdown_report(
     translation_results: list[dict[str, Any]],
     run_dir: Path,
     ollama_url: str,
-    api_url: Optional[str],
+    api_url: str | None,
     repeat_count: int,
 ) -> str:
     lines = [
         "# Model Benchmark",
         "",
-        f"- Generated at: {datetime.now(timezone.utc).isoformat()}",
+        f"- Generated at: {datetime.now(UTC).isoformat()}",
         f"- Output directory: `{display_path(run_dir)}`",
         f"- Sample source: `{sample.source_label}`",
         f"- Transcript ID: `{sample.transcript_id or 'n/a'}`",
@@ -704,15 +704,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             """\
             Examples:
               python3 scripts/benchmark_ollama_models.py --latest-transcript
-              python3 scripts/benchmark_ollama_models.py --input /path/to/transcript.json --summary-model mistral-small3.1 --summary-model qwen3:14b
-              python3 scripts/benchmark_ollama_models.py --transcript-id 123 --task translation --translation-model qwen3:14b --translation-model deepseek-r1 --target-language de
+              python3 scripts/benchmark_ollama_models.py --input /path/to/transcript.json \\
+                  --summary-model mistral-small3.1 --summary-model qwen3:14b
+              python3 scripts/benchmark_ollama_models.py --transcript-id 123 --task translation \\
+                  --translation-model qwen3:14b --translation-model deepseek-r1 --target-language de
             """
         ),
     )
     parser.add_argument("--task", choices=["both", "summary", "translation"], default="both")
     parser.add_argument("--input", type=Path, help="Transcript text file or transcript JSON payload")
     parser.add_argument("--transcript-id", help="Transcript ID to fetch from the local API")
-    parser.add_argument("--latest-transcript", action="store_true", help="Fetch the latest transcript from the local API")
+    parser.add_argument(
+        "--latest-transcript",
+        action="store_true",
+        help="Fetch the latest transcript from the local API",
+    )
     parser.add_argument("--api-url", help="Override the API base URL used for transcript lookup")
     parser.add_argument("--ollama-url", help="Override the Ollama generate URL")
     parser.add_argument("--summary-model", action="append", help="Summary model(s), repeat or comma-separate")
@@ -801,7 +807,7 @@ def main(argv: list[str]) -> int:
         )
 
     report_payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "run_directory": str(run_dir),
         "sample": asdict(sample),
         "ollama_url": ollama_url,

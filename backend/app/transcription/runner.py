@@ -6,14 +6,13 @@ import threading
 import time
 import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, Set
+from typing import Any
 
+from backend.app.runtime.bootstrap import bootstrap_service_paths, configure_logging
 from backend.app.runtime.job_notifications import (
     should_wake_for_job_type,
     start_job_notification_listener,
 )
-from backend.app.runtime.bootstrap import bootstrap_service_paths, configure_logging
-
 
 bootstrap_service_paths()
 configure_logging()
@@ -29,14 +28,13 @@ from backend.app.transcription.config import (  # noqa: E402
 )
 from backend.app.transcription.transcription_worker import process_transcription_job  # noqa: E402
 
-
 logger = logging.getLogger("transcription")
 wake_event = threading.Event()
 stop_event = threading.Event()
 executor: ThreadPoolExecutor | None = None
 worker_id = WORKER_ID
 max_parallel_jobs = 1
-active_futures: Set[Future[bool]] = set()
+active_futures: set[Future[bool]] = set()
 active_futures_lock = threading.Lock()
 
 
@@ -55,7 +53,7 @@ def heartbeat_loop(job_id: str, heartbeat_stop_event: threading.Event) -> None:
             logger.warning("Failed to heartbeat transcription job %s: %s", job_id, error)
 
 
-def run_claimed_job(job: Dict[str, Any]) -> bool:
+def run_claimed_job(job: dict[str, Any]) -> bool:
     """Process a claimed job while keeping its lease alive."""
     heartbeat_stop_event = threading.Event()
     heartbeat_thread = threading.Thread(
@@ -87,7 +85,7 @@ def on_job_finished(future: Future[bool]) -> None:
         wake_event.set()
 
 
-def submit_claimed_job(job: Dict[str, Any]) -> None:
+def submit_claimed_job(job: dict[str, Any]) -> None:
     """Submit a claimed job to the thread pool."""
     assert executor is not None
     future = executor.submit(run_claimed_job, job)

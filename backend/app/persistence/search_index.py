@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+from sqlalchemy import Float, func, or_
+from sqlalchemy.orm import Session
 
 from backend.app.domain.canonical_metadata import (
     build_segments_snapshot_from_rows,
     normalize_segments,
 )
 from backend.app.persistence.models import Transcript, TranscriptSegmentRow, TranscriptSegmentSearch, Video
-from sqlalchemy import Float, func, or_
-from sqlalchemy.orm import Session
 
-def _build_search_payloads(transcript: Transcript, db: Session) -> List[Dict[str, Any]]:
+
+def _build_search_payloads(transcript: Transcript, db: Session) -> list[dict[str, Any]]:
     segment_rows = list(transcript.segment_rows or [])
     if not segment_rows:
         segment_rows = (
@@ -89,14 +91,14 @@ def search_transcript_segments(
     db: Session,
     query: str,
     *,
-    language_code: Optional[str] = None,
+    language_code: str | None = None,
     limit: int = 20,
     offset: int = 0,
-    review_status: Optional[str] = None,
-    speaker: Optional[str] = None,
-    video_id: Optional[str] = None,
-    video_title: Optional[str] = None,
-) -> Dict[str, Any]:
+    review_status: str | None = None,
+    speaker: str | None = None,
+    video_id: str | None = None,
+    video_title: str | None = None,
+) -> dict[str, Any]:
     """Search across indexed transcript segments."""
     normalized_query = query.strip()
     normalized_language_code = (language_code or "").strip().lower()

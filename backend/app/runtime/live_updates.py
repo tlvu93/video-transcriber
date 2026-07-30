@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -29,20 +29,20 @@ PG_NOTIFY_MAX_PAYLOAD_BYTES = 7900
 
 @dataclass
 class LiveUpdateSubscriber:
-    filters: Dict[str, str]
-    queue: asyncio.Queue[Dict[str, Any]] = field(
+    filters: dict[str, str]
+    queue: asyncio.Queue[dict[str, Any]] = field(
         default_factory=lambda: asyncio.Queue(maxsize=QUEUE_SIZE)
     )
 
 
 class LiveUpdateManager:
     def __init__(self) -> None:
-        self._subscribers: List[LiveUpdateSubscriber] = []
+        self._subscribers: list[LiveUpdateSubscriber] = []
         self._lock = asyncio.Lock()
         self._instance_id = uuid4().hex
-        self._listener_task: Optional[asyncio.Task[None]] = None
+        self._listener_task: asyncio.Task[None] | None = None
 
-    async def publish(self, event: Dict[str, Any]) -> None:
+    async def publish(self, event: dict[str, Any]) -> None:
         await self._broadcast_local(event)
         await self._publish_backplane(event)
 
@@ -68,7 +68,7 @@ class LiveUpdateManager:
             await self._listener_task
         self._listener_task = None
 
-    async def subscribe(self, filters: Dict[str, str]) -> LiveUpdateSubscriber:
+    async def subscribe(self, filters: dict[str, str]) -> LiveUpdateSubscriber:
         subscriber = LiveUpdateSubscriber(filters=filters)
         async with self._lock:
             self._subscribers.append(subscriber)
@@ -79,7 +79,7 @@ class LiveUpdateManager:
             if subscriber in self._subscribers:
                 self._subscribers.remove(subscriber)
 
-    async def _broadcast_local(self, event: Dict[str, Any]) -> None:
+    async def _broadcast_local(self, event: dict[str, Any]) -> None:
         async with self._lock:
             subscribers = list(self._subscribers)
 
@@ -95,7 +95,7 @@ class LiveUpdateManager:
 
             subscriber.queue.put_nowait(event)
 
-    async def _publish_backplane(self, event: Dict[str, Any]) -> None:
+    async def _publish_backplane(self, event: dict[str, Any]) -> None:
         if not LIVE_UPDATES_NOTIFY_ENABLED:
             return
 
@@ -118,7 +118,7 @@ class LiveUpdateManager:
 
         await asyncio.to_thread(_notify)
 
-    def _matches_filters(self, event: Dict[str, Any], filters: Dict[str, str]) -> bool:
+    def _matches_filters(self, event: dict[str, Any], filters: dict[str, str]) -> bool:
         if not filters:
             return True
 
@@ -161,7 +161,7 @@ class LiveUpdateManager:
                 )
                 await asyncio.sleep(LIVE_UPDATES_RECONNECT_SECONDS)
 
-    def _parse_backplane_event(self, payload: str) -> Optional[Dict[str, Any]]:
+    def _parse_backplane_event(self, payload: str) -> dict[str, Any] | None:
         try:
             envelope = json.loads(payload)
         except json.JSONDecodeError:
@@ -190,15 +190,15 @@ class LiveUpdateManager:
         return str(value)
 
 
-def format_live_update_sse(event: Dict[str, Any]) -> str:
+def format_live_update_sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
 def build_live_update_filters(
-    video_id: Optional[str] = None,
-    transcript_id: Optional[str] = None,
-) -> Dict[str, str]:
-    filters: Dict[str, str] = {}
+    video_id: str | None = None,
+    transcript_id: str | None = None,
+) -> dict[str, str]:
+    filters: dict[str, str] = {}
 
     if video_id:
         filters["video_id"] = video_id

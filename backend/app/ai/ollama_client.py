@@ -3,11 +3,10 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Dict, Optional, Type, TypeVar
+from typing import Any, TypeVar
 
 import requests
 from pydantic import BaseModel
-
 
 HTTP_SESSION = requests.Session()
 TModel = TypeVar("TModel", bound=BaseModel)
@@ -78,12 +77,12 @@ class OllamaGenerateClient:
         *,
         temperature: float = 0.1,
         max_tokens: int = 1024,
-        stop: Optional[list[str]] = None,
+        stop: list[str] | None = None,
     ) -> str:
         if not self.check_health(force=True):
             raise RuntimeError("Ollama is unavailable or the configured model is missing")
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": self.model_name,
             "prompt": prompt,
             "stream": False,
@@ -111,7 +110,7 @@ class OllamaGenerateClient:
         self,
         prompt: str,
         *,
-        response_model: Type[TModel],
+        response_model: type[TModel],
         temperature: float = 0.1,
         max_tokens: int = 2048,
     ) -> TModel:

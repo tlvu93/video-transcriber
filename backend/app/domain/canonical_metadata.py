@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
 
 
 def _normalize_segment_id(raw_segment_id: Any, fallback_index: int) -> int:
@@ -15,7 +16,7 @@ def normalize_segments(
     raw_segments: Any,
     *,
     fallback_content: str | None = None,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     segments = raw_segments if isinstance(raw_segments, list) else []
 
     if not segments and fallback_content:
@@ -29,7 +30,7 @@ def normalize_segments(
             }
         ]
 
-    normalized_segments: List[Dict[str, Any]] = []
+    normalized_segments: list[dict[str, Any]] = []
     seen_segment_ids: set[int] = set()
 
     for index, segment in enumerate(segments, start=1):
@@ -62,8 +63,8 @@ def normalize_segments(
 
 
 def build_segments_snapshot_from_normalized_segments(
-    normalized_segments: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    normalized_segments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     return [
         {
             "id": segment["segment_id"],
@@ -76,7 +77,7 @@ def build_segments_snapshot_from_normalized_segments(
     ]
 
 
-def build_segments_snapshot_from_rows(rows: Iterable[Any]) -> List[Dict[str, Any]]:
+def build_segments_snapshot_from_rows(rows: Iterable[Any]) -> list[dict[str, Any]]:
     ordered_rows = sorted(
         rows,
         key=lambda row: (getattr(row, "segment_index", 0), getattr(row, "segment_id", 0)),
@@ -93,8 +94,8 @@ def build_segments_snapshot_from_rows(rows: Iterable[Any]) -> List[Dict[str, Any
     ]
 
 
-def normalize_speaker_aliases(raw_aliases: Any) -> Dict[str, str]:
-    normalized: Dict[str, str] = {}
+def normalize_speaker_aliases(raw_aliases: Any) -> dict[str, str]:
+    normalized: dict[str, str] = {}
     if not isinstance(raw_aliases, dict):
         return normalized
 
@@ -109,7 +110,7 @@ def normalize_speaker_aliases(raw_aliases: Any) -> Dict[str, str]:
     return normalized
 
 
-def build_speaker_alias_snapshot(rows: Iterable[Any]) -> Dict[str, str]:
+def build_speaker_alias_snapshot(rows: Iterable[Any]) -> dict[str, str]:
     return {
         row.speaker_key: row.display_name
         for row in sorted(rows, key=lambda row: row.speaker_key)
@@ -124,8 +125,8 @@ def normalize_style_guide(raw_style_guide: Any) -> str | None:
     return style_guide or None
 
 
-def normalize_glossary_terms(raw_terms: Any) -> List[Dict[str, str]]:
-    normalized_terms: List[Dict[str, str]] = []
+def normalize_glossary_terms(raw_terms: Any) -> list[dict[str, str]]:
+    normalized_terms: list[dict[str, str]] = []
     for raw_term in raw_terms or []:
         if not isinstance(raw_term, dict):
             continue
@@ -148,7 +149,7 @@ def normalize_glossary_terms(raw_terms: Any) -> List[Dict[str, str]]:
     return normalized_terms
 
 
-def build_glossary_terms_snapshot(rows: Iterable[Any]) -> List[Dict[str, str]]:
+def build_glossary_terms_snapshot(rows: Iterable[Any]) -> list[dict[str, str]]:
     ordered_rows = sorted(
         rows,
         key=lambda row: (
@@ -156,7 +157,7 @@ def build_glossary_terms_snapshot(rows: Iterable[Any]) -> List[Dict[str, str]]:
             getattr(row, "created_at", None) or datetime.min,
         ),
     )
-    snapshot: List[Dict[str, str]] = []
+    snapshot: list[dict[str, str]] = []
     for row in ordered_rows:
         term = {
             "source_term": row.source_term,
@@ -171,8 +172,8 @@ def build_glossary_terms_snapshot(rows: Iterable[Any]) -> List[Dict[str, str]]:
 def resolve_primary_storage_uri(
     storage_objects: Iterable[Any],
     *,
-    fallback_uri: Optional[str] = None,
-) -> Optional[str]:
+    fallback_uri: str | None = None,
+) -> str | None:
     storage_object_list = list(storage_objects)
     for row in storage_object_list:
         if getattr(row, "is_primary", False):

@@ -4,9 +4,8 @@ import contextvars
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
 
 REQUEST_ID_CONTEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
     "video_transcriber_request_id",
@@ -77,7 +76,7 @@ class RequestContextFilter(logging.Filter):
 class JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

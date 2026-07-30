@@ -1,6 +1,21 @@
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import relationship
+
 from backend.app.domain.canonical_metadata import (
     build_glossary_terms_snapshot,
     build_segments_snapshot_from_rows,
@@ -11,9 +26,6 @@ from backend.app.domain.canonical_metadata import (
     resolve_primary_storage_uri,
 )
 from backend.app.persistence.database import Base
-from sqlalchemy import Boolean, JSON, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import relationship
-
 
 _COMPAT_UNSET = object()
 

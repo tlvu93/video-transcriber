@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import AsyncIterator, Dict
+from collections.abc import AsyncIterator
 
 from fastapi import Request, WebSocket, WebSocketDisconnect
 
 from backend.app.runtime.live_updates import (
     KEEPALIVE_INTERVAL_SECONDS,
-    build_live_update_filters,
     format_live_update_sse,
+)
+from backend.app.runtime.live_updates import (
     live_update_manager as runtime_live_update_manager,
 )
 
@@ -26,7 +27,7 @@ class ApiLiveUpdateManager:
     async def stream(
         self,
         request: Request,
-        filters: Dict[str, str],
+        filters: dict[str, str],
     ) -> AsyncIterator[str]:
         subscriber = await self._runtime_manager.subscribe(filters)
         yield format_live_update_sse({"type": "live.connected"})
@@ -42,7 +43,7 @@ class ApiLiveUpdateManager:
                         timeout=KEEPALIVE_INTERVAL_SECONDS,
                     )
                     yield format_live_update_sse(event)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield ": keepalive\n\n"
         finally:
             await self._runtime_manager.unsubscribe(subscriber)
@@ -50,7 +51,7 @@ class ApiLiveUpdateManager:
     async def stream_websocket(
         self,
         websocket: WebSocket,
-        filters: Dict[str, str],
+        filters: dict[str, str],
     ) -> None:
         subscriber = await self._runtime_manager.subscribe(filters)
         await websocket.accept()
@@ -63,7 +64,7 @@ class ApiLiveUpdateManager:
                         subscriber.queue.get(),
                         timeout=KEEPALIVE_INTERVAL_SECONDS,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await websocket.send_json({"type": "live.keepalive"})
                     continue
 

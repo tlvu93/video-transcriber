@@ -1,5 +1,7 @@
 import sys
+
 import yt_dlp
+
 
 def test_download(url):
     ydl_opts = {

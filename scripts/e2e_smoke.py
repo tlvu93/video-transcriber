@@ -5,15 +5,13 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SAMPLE_TEXT = (
@@ -37,7 +35,7 @@ def api_base_url() -> str:
     return os.environ.get("API_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
-def build_url(path: str, params: Optional[Dict[str, Any]] = None) -> str:
+def build_url(path: str, params: dict[str, Any] | None = None) -> str:
     url = f"{api_base_url()}/{path.lstrip('/')}"
     if params:
         query = urlencode(
@@ -68,9 +66,9 @@ def request_json(
     method: str,
     path: str,
     *,
-    params: Optional[Dict[str, Any]] = None,
-    payload: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    params: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     data = None
     headers = {"Accept": "application/json"}
     if payload is not None:
@@ -151,7 +149,7 @@ def create_sample_video(temp_dir: Path) -> Path:
     return video_path
 
 
-def upload_video(video_path: Path) -> Dict[str, Any]:
+def upload_video(video_path: Path) -> dict[str, Any]:
     upload_url = build_url("/videos/")
     output = run_command(
         [
@@ -176,9 +174,9 @@ def wait_for_item(
     description: str,
     path: str,
     *,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     timeout_seconds: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         response = request_json("GET", path, params=params)
@@ -198,7 +196,7 @@ def wait_for_job_completion(
     job_id: str,
     *,
     timeout_seconds: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     deadline = time.time() + timeout_seconds
     last_status = None
     while time.time() < deadline:
@@ -219,13 +217,13 @@ def wait_for_job_completion(
     raise TimeoutError(f"Timed out waiting for {description} to complete")
 
 
-def verify_text_field(description: str, payload: Dict[str, Any], field_name: str = "content") -> None:
+def verify_text_field(description: str, payload: dict[str, Any], field_name: str = "content") -> None:
     content = str(payload.get(field_name, "")).strip()
     if not content:
         raise RuntimeError(f"{description} is missing '{field_name}' content")
 
 
-def create_translation_job(transcript_id: str, target_language: str) -> Dict[str, Any]:
+def create_translation_job(transcript_id: str, target_language: str) -> dict[str, Any]:
     payload = {
         "transcript_id": transcript_id,
         "target_language": target_language,

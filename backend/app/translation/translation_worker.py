@@ -1,7 +1,7 @@
 import logging
 import time
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from backend.app.domain.jobs import (
     JobCancellationRequestedError,
@@ -22,7 +22,6 @@ from backend.app.translation.cache import (
 )
 from backend.app.translation.translator import detect_language, translate_segments, translate_text
 
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("translation.worker")
 SUBTITLE_QA_MAX_CHARS_PER_LINE = 42
@@ -30,7 +29,7 @@ SUBTITLE_QA_MAX_CHARS_PER_SECOND = 20.0
 
 
 def build_translated_content_from_segments(
-    translated_segments: Optional[list], fallback_content: str
+    translated_segments: list | None, fallback_content: str
 ) -> str:
     if not translated_segments:
         return fallback_content
@@ -48,9 +47,9 @@ def build_translated_content_from_segments(
 
 
 def compute_subtitle_qa_metrics(
-    translated_segments: Optional[List[Dict[str, Any]]],
-    source_segments: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
+    translated_segments: list[dict[str, Any]] | None,
+    source_segments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     segments = translated_segments or []
     source_segments = source_segments or []
     overlap_warnings = 0
@@ -94,11 +93,11 @@ def compute_subtitle_qa_metrics(
     }
 
 
-def get_job_from_api(job_id: str) -> Dict[str, Any]:
+def get_job_from_api(job_id: str) -> dict[str, Any]:
     return get_translation_job(job_id)
 
 
-def get_transcript_from_api(transcript_id: str) -> Dict[str, Any]:
+def get_transcript_from_api(transcript_id: str) -> dict[str, Any]:
     return get_transcript(transcript_id)
 
 
@@ -106,12 +105,12 @@ def create_translation_api(
     transcript_id: str,
     language: str,
     content: str,
-    segments: Optional[list] = None,
+    segments: list | None = None,
     *,
-    style_guide: Optional[str] = None,
-    glossary_terms: Optional[List[Dict[str, str]]] = None,
-    qa_metrics: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    style_guide: str | None = None,
+    glossary_terms: list[dict[str, str]] | None = None,
+    qa_metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     translation = create_or_update_translated_transcript(
         transcript_id,
         language,
@@ -129,8 +128,8 @@ def update_job_status_api(
     job_id: str,
     worker_id: str,
     status: str,
-    processing_time: Optional[float] = None,
-    error_details: Optional[Dict[str, Any]] = None,
+    processing_time: float | None = None,
+    error_details: dict[str, Any] | None = None,
 ) -> None:
     try:
         if status == "completed":
@@ -155,7 +154,7 @@ def update_job_status_api(
         logger.error("Exception traceback: %s", traceback.format_exc())
 
 
-def claim_next_translation_job_api(worker_id: str) -> Optional[Dict[str, Any]]:
+def claim_next_translation_job_api(worker_id: str) -> dict[str, Any] | None:
     return claim_next_translation_job(worker_id)
 
 
@@ -168,7 +167,7 @@ def update_translation_job_progress_api(
     worker_id: str,
     progress: float,
     *,
-    error_details: Optional[Dict[str, Any]] = None,
+    error_details: dict[str, Any] | None = None,
 ) -> None:
     update_translation_job_progress(
         job_id,
@@ -188,7 +187,7 @@ def process_translation_job(job_id: str, worker_id: str) -> bool:
     retry_count = 0
 
     while retry_count < max_retries:
-        timings: Dict[str, Any] = {}
+        timings: dict[str, Any] = {}
         try:
             job_fetch_started_at = time.perf_counter()
             job = get_job_from_api(job_id)

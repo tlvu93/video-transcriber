@@ -4,7 +4,6 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql://videotranscriber:videotranscriber@localhost:5432/videotranscriber",

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
-
 
 LegacyJobType = Literal["summarization", "transcription", "translation"]
 
@@ -23,25 +22,23 @@ class TranscriptionJobResponse(BaseModel):
     video_id: str
     status: str
     created_at: Any
-    started_at: Optional[Any] = None
-    completed_at: Optional[Any] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
-    worker_id: Optional[str] = None
-    lease_expires_at: Optional[Any] = None
+    started_at: Any | None = None
+    completed_at: Any | None = None
+    processing_time_seconds: float | None = None
+    error_details: dict[str, Any] | None = None
+    worker_id: str | None = None
+    lease_expires_at: Any | None = None
 
 
 class TranscriptionJobUpdate(LeaseWorkerRequest):
-    status: Optional[str] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
+    status: str | None = None
+    processing_time_seconds: float | None = None
+    error_details: dict[str, Any] | None = None
 
 
 class SummarizationJobCreate(BaseModel):
     transcript_id: str
-    content_profile: Optional[
-        Literal["generic", "interview", "lecture", "meeting", "podcast"]
-    ] = None
+    content_profile: Literal["generic", "interview", "lecture", "meeting", "podcast"] | None = None
 
 
 class SummarizationJobResponse(BaseModel):
@@ -49,33 +46,33 @@ class SummarizationJobResponse(BaseModel):
 
     id: str
     transcript_id: str
-    content_profile: Optional[str] = None
+    content_profile: str | None = None
     status: str
     created_at: Any
-    started_at: Optional[Any] = None
-    completed_at: Optional[Any] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
-    worker_id: Optional[str] = None
-    lease_expires_at: Optional[Any] = None
+    started_at: Any | None = None
+    completed_at: Any | None = None
+    processing_time_seconds: float | None = None
+    error_details: dict[str, Any] | None = None
+    worker_id: str | None = None
+    lease_expires_at: Any | None = None
 
 
 class SummarizationJobUpdate(LeaseWorkerRequest):
-    status: Optional[str] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
+    status: str | None = None
+    processing_time_seconds: float | None = None
+    error_details: dict[str, Any] | None = None
 
 
 class TranslationGlossaryTermInput(BaseModel):
     source_term: str
     target_term: str
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 def normalize_translation_glossary_terms(
-    raw_terms: Optional[List[TranslationGlossaryTermInput]],
-) -> List[Dict[str, str]]:
-    normalized_terms: List[Dict[str, str]] = []
+    raw_terms: list[TranslationGlossaryTermInput] | None,
+) -> list[dict[str, str]]:
+    normalized_terms: list[dict[str, str]] = []
     for raw_term in raw_terms or []:
         source_term = raw_term.source_term.strip()
         target_term = raw_term.target_term.strip()
@@ -97,9 +94,9 @@ def normalize_translation_glossary_terms(
 class TranslationJobCreate(BaseModel):
     transcript_id: str
     target_language: str
-    source_language: Optional[str] = None
-    style_guide: Optional[str] = None
-    glossary_terms: Optional[List[TranslationGlossaryTermInput]] = None
+    source_language: str | None = None
+    style_guide: str | None = None
+    glossary_terms: list[TranslationGlossaryTermInput] | None = None
 
 
 class TranslationJobResponse(BaseModel):
@@ -107,24 +104,24 @@ class TranslationJobResponse(BaseModel):
 
     id: str
     transcript_id: str
-    source_language: Optional[str]
+    source_language: str | None
     target_language: str
-    style_guide: Optional[str] = None
-    glossary_terms: Optional[List[Dict[str, str]]] = None
+    style_guide: str | None = None
+    glossary_terms: list[dict[str, str]] | None = None
     status: str
     created_at: Any
-    started_at: Optional[Any] = None
-    completed_at: Optional[Any] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
-    worker_id: Optional[str] = None
-    lease_expires_at: Optional[Any] = None
+    started_at: Any | None = None
+    completed_at: Any | None = None
+    processing_time_seconds: float | None = None
+    error_details: dict[str, Any] | None = None
+    worker_id: str | None = None
+    lease_expires_at: Any | None = None
 
 
 class TranslationJobUpdate(LeaseWorkerRequest):
-    status: Optional[str] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
+    status: str | None = None
+    processing_time_seconds: float | None = None
+    error_details: dict[str, Any] | None = None
 
 
 class UnifiedJobResponse(BaseModel):
@@ -138,16 +135,16 @@ class UnifiedJobResponse(BaseModel):
     subject_id: str
     status: str
     priority: int
-    payload: Optional[Dict[str, Any]] = None
-    progress: Optional[float] = None
+    payload: dict[str, Any] | None = None
+    progress: float | None = None
     attempt_count: int
-    worker_id: Optional[str] = None
-    lease_expires_at: Optional[Any] = None
+    worker_id: str | None = None
+    lease_expires_at: Any | None = None
     created_at: Any
-    started_at: Optional[Any] = None
-    completed_at: Optional[Any] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
+    started_at: Any | None = None
+    completed_at: Any | None = None
+    processing_time_seconds: float | None = None
+    error_details: dict[str, Any] | None = None
 
 
 class JobAttemptResponse(BaseModel):
@@ -156,10 +153,10 @@ class JobAttemptResponse(BaseModel):
     id: str
     job_id: str
     attempt_number: int
-    worker_id: Optional[str] = None
+    worker_id: str | None = None
     status: str
     started_at: Any
-    completed_at: Optional[Any] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
+    completed_at: Any | None = None
+    processing_time_seconds: float | None = None
+    error_details: dict[str, Any] | None = None
     created_at: Any
