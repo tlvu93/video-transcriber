@@ -52,10 +52,14 @@ function parseLiveUpdateEvent(rawEvent: string): LiveUpdateEvent | null {
 }
 
 function invalidateQuery(
-  invalidate: (queryKey: readonly unknown[]) => Promise<void>,
-  queryKey: readonly unknown[]
+  invalidate: (
+    queryKey: readonly unknown[],
+    options?: { exact?: boolean }
+  ) => Promise<void>,
+  queryKey: readonly unknown[],
+  options?: { exact?: boolean }
 ): void {
-  invalidate(queryKey).catch((error) => {
+  invalidate(queryKey, options).catch((error) => {
     console.error("Failed to invalidate query after live update:", error);
   });
 }
@@ -137,7 +141,11 @@ export function useVideoListLiveUpdates(): void {
     return subscribeToLiveUpdates((event) => {
       if (event.type === "video.created" || event.type === "video.updated") {
         invalidateQuery(
-          (queryKey) => queryClient.invalidateQueries({ queryKey }),
+          (queryKey, options) =>
+            queryClient.invalidateQueries({
+              queryKey,
+              exact: options?.exact ?? false,
+            }),
           ["videos"]
         );
       }
@@ -158,67 +166,82 @@ export function useVideoDetailLiveUpdates(
 
     return subscribeToLiveUpdates(
       (event) => {
-      const invalidate = (queryKey: readonly unknown[]) =>
+      const invalidate = (
+        queryKey: readonly unknown[],
+        options?: { exact?: boolean }
+      ) =>
         invalidateQuery(
-          (currentQueryKey) =>
-            queryClient.invalidateQueries({ queryKey: currentQueryKey }),
-          queryKey
+          (currentQueryKey, currentOptions) =>
+            queryClient.invalidateQueries({
+              queryKey: currentQueryKey,
+              exact: currentOptions?.exact ?? false,
+            }),
+          queryKey,
+          options
         );
 
       switch (event.type) {
         case "video.created":
         case "video.updated":
-          invalidate(["video", videoId]);
+          invalidate(["video", videoId], { exact: true });
           invalidate(["videos"]);
           break;
         case "transcription.created":
-          invalidate(["transcripts", videoId]);
-          invalidate(["video", videoId]);
+          invalidate(["transcripts", videoId], { exact: true });
+          invalidate(["video", videoId], { exact: true });
           invalidate(["videos"]);
           break;
         case "summary.created":
           if (event.transcript_id) {
-            invalidate(["summaries", event.transcript_id]);
-            invalidate(["summarizationJobs", event.transcript_id]);
+            invalidate(["summaries", event.transcript_id], { exact: true });
+            invalidate(["summarizationJobs", event.transcript_id], {
+              exact: true,
+            });
           }
           break;
         case "translation.created":
           if (event.transcript_id) {
-            invalidate(["translations", event.transcript_id]);
-            invalidate(["translationJobs", event.transcript_id]);
+            invalidate(["translations", event.transcript_id], { exact: true });
+            invalidate(["translationJobs", event.transcript_id], {
+              exact: true,
+            });
           }
           break;
         case "transcript.updated":
-          invalidate(["transcripts", videoId]);
+          invalidate(["transcripts", videoId], { exact: true });
           break;
         case "translated_transcript.updated":
           if (event.transcript_id) {
-            invalidate(["translations", event.transcript_id]);
+            invalidate(["translations", event.transcript_id], { exact: true });
           }
           break;
         case "job.status.changed":
           if (event.job_type === "transcription") {
-            invalidate(["transcriptionJobs", videoId]);
-            invalidate(["video", videoId]);
+            invalidate(["transcriptionJobs", videoId], { exact: true });
+            invalidate(["video", videoId], { exact: true });
 
             if (event.status === "completed") {
-              invalidate(["transcripts", videoId]);
+              invalidate(["transcripts", videoId], { exact: true });
             }
           }
 
           if (event.job_type === "summarization" && event.transcript_id) {
-            invalidate(["summarizationJobs", event.transcript_id]);
+            invalidate(["summarizationJobs", event.transcript_id], {
+              exact: true,
+            });
 
             if (event.status === "completed") {
-              invalidate(["summaries", event.transcript_id]);
+              invalidate(["summaries", event.transcript_id], { exact: true });
             }
           }
 
           if (event.job_type === "translation" && event.transcript_id) {
-            invalidate(["translationJobs", event.transcript_id]);
+            invalidate(["translationJobs", event.transcript_id], {
+              exact: true,
+            });
 
             if (event.status === "completed") {
-              invalidate(["translations", event.transcript_id]);
+              invalidate(["translations", event.transcript_id], { exact: true });
             }
           }
           break;
@@ -242,13 +265,21 @@ export function useUnifiedJobLiveUpdates(): void {
       }
 
       invalidateQuery(
-        (queryKey) => queryClient.invalidateQueries({ queryKey }),
+        (queryKey, options) =>
+          queryClient.invalidateQueries({
+            queryKey,
+            exact: options?.exact ?? false,
+          }),
         ["unifiedJobs"]
       );
 
       if (event.job_id) {
         invalidateQuery(
-          (queryKey) => queryClient.invalidateQueries({ queryKey }),
+          (queryKey, options) =>
+            queryClient.invalidateQueries({
+              queryKey,
+              exact: options?.exact ?? false,
+            }),
           ["jobAttempts", event.job_id]
         );
       }

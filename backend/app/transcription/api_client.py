@@ -61,11 +61,6 @@ def ensure_transcription_job_not_cancelled_api(job_id: str, worker_id: str) -> N
     ensure_transcription_job_not_cancelled(job_id, worker_id)
 
 
-def get_all_pending_transcription_jobs_api() -> List[Dict[str, Any]]:
-    logger.warning("Listing all pending transcription jobs is no longer used in the consolidated backend")
-    return []
-
-
 def get_video_from_api(video_id: str) -> Dict[str, Any]:
     return get_video(video_id)
 

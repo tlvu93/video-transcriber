@@ -15,6 +15,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
     op.execute(
         """
@@ -33,5 +37,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+
     op.execute("DROP INDEX IF EXISTS ix_transcript_segment_search_text_fts")
     op.execute("DROP INDEX IF EXISTS ix_transcript_segment_search_text_trgm")

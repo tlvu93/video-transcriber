@@ -20,20 +20,20 @@ The backend now maintains normalized relational tables for the main editable met
 
 ## Source Of Truth Rules
 
-- `videos.storage_path` remains as a compatibility field, but canonical storage identity is also tracked in `video_storage_objects`.
-- `transcripts.segments` and `translated_transcripts.segments` remain as compatibility snapshots, but writes now sync normalized segment rows first and then refresh the snapshot fields.
-- `transcripts.speaker_aliases` remains as a compatibility snapshot, but speaker metadata is also stored in `speakers`.
-- `translated_transcripts.style_guide` and `translated_transcripts.glossary_terms` remain as compatibility snapshots, but normalized rows live in `style_guides` and `glossary_terms`.
+- `video_storage_objects` is the canonical storage identity for each video.
+- `transcript_segments` and `translated_transcript_segments` are the canonical editable segment stores.
+- `speakers` is the canonical transcript speaker-alias store.
+- `style_guides` and `glossary_terms` are the canonical localization-metadata stores for translated transcripts.
 - `summaries.content` remains the primary summary text field, and `summary_variants` now stores the named/default variant row for future expansion.
 
 ## Migration Scope
 
 The Alembic migration [20260312_normalized_metadata_tables.py](/Users/tuanvu/Projects/Own%20Apps/video-transcriber/alembic/versions/20260312_normalized_metadata_tables.py) backfills:
 
-- storage objects from `videos.storage_path`
-- speaker rows from `transcripts.speaker_aliases` plus segment speaker IDs
+- storage objects from legacy video storage paths
+- speaker rows from legacy transcript speaker aliases plus segment speaker IDs
 - summary variants from existing summaries
-- style guides and glossary terms from translated transcript snapshot fields
+- style guides and glossary terms from legacy translated transcript localization fields
 
 ## Runtime Behavior
 
@@ -47,4 +47,10 @@ The API and shared backend record services now keep these normalized tables upda
 - summary creation
 - translated transcript creation and updates
 
-This means the repo can keep its existing frontend/API contracts while the backend data model is now structured enough for later collaboration, storage abstraction, and richer QA workflows.
+This means the repo can keep its existing frontend/API contracts while the backend data model is structured enough for later collaboration, storage abstraction, and richer QA workflows.
+
+## Current Write Strategy
+
+- normalized segment, speaker, glossary, and search rows are updated incrementally rather than being fully deleted and reinserted on every edit
+- the legacy snapshot columns have been removed; compatibility payloads are now projected directly from canonical normalized rows
+- legacy job endpoints now read from canonical `jobs` rows and project legacy response shapes from `jobs.payload` rather than querying legacy job tables for reads

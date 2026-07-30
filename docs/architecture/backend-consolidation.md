@@ -40,5 +40,5 @@ These entrypoints are now the preferred runtime surface for Docker Compose and D
 Later milestones still build on top of this foundation, especially:
 
 1. `M3` continuing the data-model shift from JSON-first records to normalized source-of-truth tables.
-2. `M4` simplifying orchestration beyond the legacy per-job tables that still coexist with the unified jobs view.
+2. `M4` continuing to simplify orchestration now that the unified jobs view is the only persisted job system.
 3. `M8` continuing to simplify runtime boundaries now that compatibility wrappers are gone.

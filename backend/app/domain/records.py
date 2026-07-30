@@ -5,11 +5,17 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend.app.persistence.search_index import sync_transcript_search_rows
-from backend.app.persistence.segment_sync import (
+from backend.app.domain.canonical_metadata import (
     build_glossary_terms_snapshot,
     build_segments_snapshot_from_rows,
     build_speaker_alias_snapshot,
+    normalize_glossary_terms,
+    normalize_speaker_aliases,
+    normalize_style_guide as normalize_translation_style_guide,
+    resolve_primary_storage_uri,
+)
+from backend.app.persistence.search_index import sync_transcript_search_rows
+from backend.app.persistence.segment_sync import (
     sync_summary_variants,
     sync_transcript_segment_rows,
     sync_transcript_speaker_rows,
@@ -34,6 +40,7 @@ from backend.app.persistence.models import (
     TranscriptRevision,
     TranslatedTranscript,
     Video,
+    VideoStorageObject,
 )
 from backend.app.runtime.storage import get_storage_backend
 
@@ -43,10 +50,6 @@ storage_backend = get_storage_backend()
 
 
 def serialize_video(video: Video) -> Dict[str, Any]:
-    primary_storage_object = next(
-        (storage_object for storage_object in (video.storage_objects or []) if storage_object.is_primary),
-        None,
-    )
     return {
         "id": str(video.id),
         "filename": video.filename,
@@ -54,11 +57,7 @@ def serialize_video(video: Video) -> Dict[str, Any]:
         "created_at": video.created_at,
         "file_hash": video.file_hash,
         "video_metadata": video.video_metadata,
-        "storage_path": (
-            primary_storage_object.storage_uri
-            if primary_storage_object is not None
-            else video.storage_path
-        ),
+        "storage_path": resolve_primary_storage_uri(video.storage_objects or [], fallback_uri=video.storage_path),
     }
 
 
@@ -134,55 +133,6 @@ def serialize_translated_transcript(translated_transcript: TranslatedTranscript)
         "created_at": translated_transcript.created_at,
     }
 
-
-def normalize_speaker_aliases(raw_aliases: Optional[Dict[str, Any]]) -> Dict[str, str]:
-    normalized: Dict[str, str] = {}
-    if not isinstance(raw_aliases, dict):
-        return normalized
-
-    for raw_speaker_id, raw_speaker_name in raw_aliases.items():
-        speaker_id = str(raw_speaker_id).strip()
-        if not speaker_id:
-            continue
-
-        speaker_name = str(raw_speaker_name).strip() if raw_speaker_name is not None else ""
-        normalized[speaker_id] = speaker_name or speaker_id
-
-    return normalized
-
-
-def normalize_translation_style_guide(raw_style_guide: Optional[str]) -> Optional[str]:
-    if raw_style_guide is None:
-        return None
-
-    style_guide = raw_style_guide.strip()
-    return style_guide or None
-
-
-def normalize_glossary_terms(raw_terms: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
-    normalized_terms: List[Dict[str, str]] = []
-    for raw_term in raw_terms or []:
-        if not isinstance(raw_term, dict):
-            continue
-
-        source_term = str(raw_term.get("source_term", "")).strip()
-        target_term = str(raw_term.get("target_term", "")).strip()
-        if not source_term or not target_term:
-            continue
-
-        normalized_term = {
-            "source_term": source_term,
-            "target_term": target_term,
-        }
-        notes = str(raw_term.get("notes", "")).strip()
-        if notes:
-            normalized_term["notes"] = notes
-
-        normalized_terms.append(normalized_term)
-
-    return normalized_terms
-
-
 def create_transcript_revision(db: Session, transcript: Transcript, *, reason: str) -> None:
     if not transcript.id:
         db.flush()
@@ -250,7 +200,13 @@ def find_existing_video(
     file_hash: Optional[str] = None,
 ) -> tuple[Optional[Video], Optional[str]]:
     if storage_path:
-        existing_video = db.query(Video).filter(Video.storage_path == storage_path).first()
+        storage_object = (
+            db.query(VideoStorageObject)
+            .filter(VideoStorageObject.storage_uri == storage_path)
+            .order_by(VideoStorageObject.is_primary.desc(), VideoStorageObject.created_at.desc())
+            .first()
+        )
+        existing_video = storage_object.video if storage_object is not None else None
         if existing_video:
             return existing_video, "storage_path"
 

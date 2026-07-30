@@ -5,6 +5,8 @@ Revises: 20260312_transcript_review_meta
 Create Date: 2026-03-12 00:32:00
 """
 
+from datetime import datetime
+import json
 import uuid
 
 from alembic import op
@@ -15,6 +17,26 @@ revision = "20260312_unified_jobs"
 down_revision = "20260312_transcript_review_meta"
 branch_labels = None
 depends_on = None
+
+
+def _coerce_datetime(value):
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _coerce_json(value):
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
 
 
 def upgrade() -> None:
@@ -156,12 +178,12 @@ def upgrade() -> None:
                     "progress": None,
                     "attempt_count": attempt_count,
                     "worker_id": row["worker_id"],
-                    "lease_expires_at": row["lease_expires_at"],
-                    "created_at": row["created_at"],
-                    "started_at": row["started_at"],
-                    "completed_at": row["completed_at"],
+                    "lease_expires_at": _coerce_datetime(row["lease_expires_at"]),
+                    "created_at": _coerce_datetime(row["created_at"]),
+                    "started_at": _coerce_datetime(row["started_at"]),
+                    "completed_at": _coerce_datetime(row["completed_at"]),
                     "processing_time_seconds": row["processing_time_seconds"],
-                    "error_details": row["error_details"],
+                    "error_details": _coerce_json(row["error_details"]),
                 }
             )
             if has_attempt:
@@ -172,11 +194,11 @@ def upgrade() -> None:
                         "attempt_number": 1,
                         "worker_id": row["worker_id"],
                         "status": row["status"],
-                        "started_at": row["started_at"],
-                        "completed_at": row["completed_at"],
+                        "started_at": _coerce_datetime(row["started_at"]),
+                        "completed_at": _coerce_datetime(row["completed_at"]),
                         "processing_time_seconds": row["processing_time_seconds"],
-                        "error_details": row["error_details"],
-                        "created_at": row["created_at"],
+                        "error_details": _coerce_json(row["error_details"]),
+                        "created_at": _coerce_datetime(row["created_at"]),
                     }
                 )
 

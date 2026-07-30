@@ -13,8 +13,9 @@ This milestone completes the orchestration rebuild around a canonical PostgreSQL
 
 ## Compatibility
 
-- legacy `transcription_jobs`, `summarization_jobs`, and `translation_jobs` tables still exist as compatibility mirrors.
-- legacy claim, heartbeat, complete, and fail routes now delegate into the canonical jobs domain before returning legacy-shaped payloads.
+- legacy `/transcription-jobs`, `/summarization-jobs`, and `/translation-jobs` routes remain available as compatibility projections.
+- legacy create, claim, heartbeat, list, get, complete, fail, and retry routes now project responses from canonical `jobs` rows instead of reading legacy job tables directly.
+- `jobs.payload` is backfilled with legacy-only compatibility fields such as `video_id`, `transcript_id`, `content_profile`, `style_guide`, and `glossary_terms`.
 - the frontend Jobs dashboard is now powered by the unified jobs API and exposes progress, cancel, retry, and attempt history.
 
 ## Scope Notes

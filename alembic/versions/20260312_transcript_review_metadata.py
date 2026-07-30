@@ -16,10 +16,15 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
     op.add_column("transcripts", sa.Column("review_status", sa.String(), nullable=True))
     op.add_column("transcripts", sa.Column("review_assignee", sa.String(), nullable=True))
     op.execute("UPDATE transcripts SET review_status = 'draft' WHERE review_status IS NULL")
-    op.alter_column("transcripts", "review_status", nullable=False)
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("transcripts") as batch_op:
+            batch_op.alter_column("review_status", existing_type=sa.String(), nullable=False)
+    else:
+        op.alter_column("transcripts", "review_status", nullable=False)
 
     op.create_table(
         "transcript_comments",
@@ -42,7 +47,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
     op.drop_index("ix_transcript_comments_transcript_created_at", table_name="transcript_comments")
     op.drop_table("transcript_comments")
-    op.drop_column("transcripts", "review_assignee")
-    op.drop_column("transcripts", "review_status")
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("transcripts") as batch_op:
+            batch_op.drop_column("review_assignee")
+            batch_op.drop_column("review_status")
+    else:
+        op.drop_column("transcripts", "review_assignee")
+        op.drop_column("transcripts", "review_status")

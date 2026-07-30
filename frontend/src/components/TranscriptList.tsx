@@ -933,15 +933,15 @@ export default function TranscriptList({
   return (
     <div className="panel flex h-full flex-col overflow-hidden p-4 sm:p-5">
       <div className="mb-4 flex flex-col gap-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 basis-56">
             <p className="font-semibold text-primary/80 text-xs uppercase tracking-[0.24em]">
               Transcript
             </p>
             <h3 className="mt-2 font-semibold text-foreground text-xl">
               {transcriptHeading}
             </h3>
-            <p className="mt-2 text-muted-foreground text-sm">
+            <p className="mt-2 break-words text-muted-foreground text-sm">
               {transcriptDescription} Search, edit, export, and move through the
               spoken timeline.
             </p>
@@ -1060,7 +1060,7 @@ export default function TranscriptList({
                 ref={historyMenuRef}
               >
                 <button
-                  className="mr-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
+                  className="mr-2 max-w-full rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
                   onClick={() => setHistoryMenuOpen(!historyMenuOpen)}
                   type="button"
                 >
@@ -1122,7 +1122,7 @@ export default function TranscriptList({
               </div>
 
               <button
-                className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
+                className="max-w-full rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
                 onClick={() => setMenuOpen(!menuOpen)}
                 type="button"
               >
@@ -1273,7 +1273,7 @@ export default function TranscriptList({
         </div>
 
         <div className="flex flex-wrap items-center gap-3 text-sm">
-          <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-muted-foreground">
+          <span className="w-full rounded-[1.25rem] border border-white/10 bg-white/5 px-3 py-2 text-muted-foreground">
             {exportingFormat
               ? `Preparing ${getExportFormatLabel(exportingFormat)} download from the backend`
               : "Backend-generated exports stay aligned with the saved review state"}
@@ -1285,7 +1285,7 @@ export default function TranscriptList({
           ) : null}
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(8.5rem,1fr))] gap-3">
           <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
             <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
               Visible segments
@@ -1317,10 +1317,10 @@ export default function TranscriptList({
           </div>
         </div>
 
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(18rem,1fr))] gap-3">
           <section className="rounded-2xl border border-white/8 bg-white/5 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
                 <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
                   Review status
                 </p>
@@ -1347,9 +1347,9 @@ export default function TranscriptList({
                 <option value="needs_changes">Needs changes</option>
               </select>
             </div>
-            <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+            <div className="mt-4 flex flex-wrap gap-3">
               <input
-                className="flex-1 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm placeholder:text-muted-foreground/80"
+                className="min-w-0 flex-1 basis-48 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm placeholder:text-muted-foreground/80"
                 onChange={(event) => setReviewAssigneeDraft(event.target.value)}
                 placeholder="Assignee or reviewer"
                 type="text"
@@ -1367,8 +1367,8 @@ export default function TranscriptList({
           </section>
 
           <section className="rounded-2xl border border-white/8 bg-white/5 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
                 <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
                   Review comments
                 </p>

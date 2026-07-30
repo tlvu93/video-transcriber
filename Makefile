@@ -1,4 +1,4 @@
-.PHONY: setup up down clean help benchmark-models compile-locks smoke smoke-e2e
+.PHONY: setup up down clean help benchmark-models compile-locks smoke smoke-e2e verify
 
 # Default target
 help:
@@ -9,6 +9,7 @@ help:
 	@echo "  make clean    - Remove generated docker-compose.override.yml"
 	@echo "  make smoke    - Build the stack and verify frontend plus services are reachable"
 	@echo "  make smoke-e2e - Run the full upload-to-processing smoke test"
+	@echo "  make verify   - Run backend tests plus frontend tests and type checks"
 	@echo "  make benchmark-models - Compare Ollama models against the latest transcript"
 	@echo "  make compile-locks - Regenerate service lock files from the root pyproject extras"
 	@echo "  make help     - Show this help message"
@@ -35,6 +36,12 @@ smoke:
 # Run the full upload-to-processing smoke flow
 smoke-e2e:
 	@./scripts/smoke-e2e-compose.sh
+
+# Run repo verification checks
+verify:
+	@DATABASE_URL=postgresql://videotranscriber:videotranscriber@localhost:5432/videotranscriber python3 -m pytest
+	@npm --prefix frontend test
+	@npm --prefix frontend run typecheck
 
 # Clean generated files
 clean:

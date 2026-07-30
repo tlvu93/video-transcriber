@@ -7,7 +7,8 @@ Create Date: 2026-03-12 05:10:00
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
+import json
 import uuid
 from typing import Any, Dict, List
 
@@ -19,6 +20,26 @@ revision = "20260312_norm_metadata_tables"
 down_revision = "20260312_translation_qc"
 branch_labels = None
 depends_on = None
+
+
+def _coerce_datetime(value: Any) -> Any:
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _coerce_json(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
 
 
 def _normalize_segment_id(raw_segment_id: Any, fallback_index: int) -> int:
@@ -199,7 +220,7 @@ def upgrade() -> None:
     )
 
     bind = op.get_bind()
-    now = datetime.utcnow()
+    now = datetime.now(UTC).replace(tzinfo=None)
 
     video_table = sa.table(
         "videos",
@@ -289,8 +310,8 @@ def upgrade() -> None:
                 "storage_uri": row.storage_path,
                 "content_hash": row.file_hash,
                 "is_primary": True,
-                "created_at": row.created_at or now,
-                "updated_at": row.created_at or now,
+                "created_at": _coerce_datetime(row.created_at) or now,
+                "updated_at": _coerce_datetime(row.created_at) or now,
             }
         )
     if storage_rows:
@@ -298,9 +319,9 @@ def upgrade() -> None:
 
     speaker_rows = []
     for row in bind.execute(sa.select(transcript_table.c.id, transcript_table.c.speaker_aliases, transcript_table.c.segments, transcript_table.c.created_at)):
-        normalized_aliases = _normalize_speaker_aliases(row.speaker_aliases)
+        normalized_aliases = _normalize_speaker_aliases(_coerce_json(row.speaker_aliases))
         speaker_keys = set(normalized_aliases.keys())
-        for segment in _normalize_segments(row.segments):
+        for segment in _normalize_segments(_coerce_json(row.segments)):
             speaker = segment.get("speaker")
             if speaker:
                 speaker_keys.add(speaker)
@@ -312,8 +333,8 @@ def upgrade() -> None:
                     "transcript_id": row.id,
                     "speaker_key": speaker_key,
                     "display_name": normalized_aliases.get(speaker_key, speaker_key),
-                    "created_at": row.created_at or now,
-                    "updated_at": row.created_at or now,
+                    "created_at": _coerce_datetime(row.created_at) or now,
+                    "updated_at": _coerce_datetime(row.created_at) or now,
                 }
             )
     if speaker_rows:
@@ -327,8 +348,8 @@ def upgrade() -> None:
                 "summary_id": row.id,
                 "variant_type": "default",
                 "content": row.content,
-                "created_at": row.created_at or now,
-                "updated_at": row.created_at or now,
+                "created_at": _coerce_datetime(row.created_at) or now,
+                "updated_at": _coerce_datetime(row.created_at) or now,
             }
         )
     if summary_variant_rows:
@@ -344,7 +365,7 @@ def upgrade() -> None:
             translated_transcript_table.c.created_at,
         )
     ):
-        created_at = row.created_at or now
+        created_at = _coerce_datetime(row.created_at) or now
         style_guide = str(row.style_guide).strip() if row.style_guide else ""
         if style_guide:
             style_guide_rows.append(
@@ -357,7 +378,7 @@ def upgrade() -> None:
                 }
             )
 
-        for index, term in enumerate(_normalize_glossary_terms(row.glossary_terms), start=1):
+        for index, term in enumerate(_normalize_glossary_terms(_coerce_json(row.glossary_terms)), start=1):
             glossary_term_rows.append(
                 {
                     "id": str(uuid.uuid4()),

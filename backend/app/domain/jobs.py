@@ -1,29 +1,15 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 from sqlalchemy import and_, or_
-from sqlalchemy.orm import Session
 
-from backend.app.domain.job_queue import (
-    JobLeaseOwnershipError,
-    create_summarization_job as create_summarization_job_row,
-    create_transcription_job as create_transcription_job_row,
-    create_translation_job as create_translation_job_row,
-)
-from backend.app.persistence.database import SessionLocal
-from backend.app.persistence.models import (
-    JobAttempt,
-    SummarizationJob,
-    Transcript,
-    TranscriptionJob,
-    TranslationJob,
-    UnifiedJob,
-    Video,
-)
 from backend.app.domain.events import publish_job_live_update_sync
+from backend.app.persistence.database import SessionLocal
+from backend.app.persistence.models import JobAttempt, Transcript, UnifiedJob, Video
 from backend.app.runtime.config import JOB_LEASE_DURATION_SECONDS
 from backend.app.runtime.metrics import record_metric_event
 
@@ -39,21 +25,18 @@ JOB_STATUS_CANCELLED = "cancelled"
 ATTEMPT_STATUS_CANCELLED = "cancelled"
 ATTEMPT_STATUS_EXPIRED = "expired"
 
-JOB_TYPE_SPECS: dict[str, dict[str, Any]] = {
+JOB_TYPE_SPECS: dict[str, dict[str, str]] = {
     "transcription": {
-        "legacy_model": TranscriptionJob,
         "legacy_table": "transcription_jobs",
         "subject_type": "video",
         "subject_key": "video_id",
     },
     "summarization": {
-        "legacy_model": SummarizationJob,
         "legacy_table": "summarization_jobs",
         "subject_type": "transcript",
         "subject_key": "transcript_id",
     },
     "translation": {
-        "legacy_model": TranslationJob,
         "legacy_table": "translation_jobs",
         "subject_type": "transcript",
         "subject_key": "transcript_id",
@@ -61,65 +44,87 @@ JOB_TYPE_SPECS: dict[str, dict[str, Any]] = {
 }
 
 
+class JobLeaseOwnershipError(ValueError):
+    """Raised when a worker attempts to mutate a job it does not own."""
+
+
 class JobCancellationRequestedError(RuntimeError):
     """Raised when a worker should stop because cancellation was requested."""
 
 
 def _lease_expiration() -> datetime:
-    return datetime.utcnow() + timedelta(seconds=JOB_LEASE_DURATION_SECONDS)
+    return _utcnow() + timedelta(seconds=JOB_LEASE_DURATION_SECONDS)
 
 
-def _get_job_spec(job_type: str) -> dict[str, Any]:
+def _utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _get_job_spec(job_type: str) -> dict[str, str]:
     if job_type not in JOB_TYPE_SPECS:
         raise ValueError(f"Unsupported job type: {job_type}")
     return JOB_TYPE_SPECS[job_type]
 
 
-def _get_job_type_for_legacy_model(model: type[Any]) -> str:
-    for job_type, spec in JOB_TYPE_SPECS.items():
-        if spec["legacy_model"] is model:
-            return job_type
-    raise ValueError(f"Unsupported legacy model: {model}")
-
-
-def _build_unified_payload_from_legacy(job_type: str, legacy_job: Any) -> Dict[str, Any]:
+def _build_payload(
+    job_type: str,
+    subject_id: str,
+    *,
+    source_language: Optional[str] = None,
+    target_language: Optional[str] = None,
+    content_profile: Optional[str] = None,
+    style_guide: Optional[str] = None,
+    glossary_terms: Optional[list[dict[str, str]]] = None,
+) -> Dict[str, Any]:
     spec = _get_job_spec(job_type)
     payload: Dict[str, Any] = {
-        spec["subject_key"]: str(getattr(legacy_job, spec["subject_key"])),
+        spec["subject_key"]: str(subject_id),
     }
 
     if job_type == "summarization":
-        if legacy_job.content_profile:
-            payload["content_profile"] = legacy_job.content_profile
-    elif job_type == "translation":
-        payload.update(
-            {
-                "source_language": legacy_job.source_language,
-                "target_language": legacy_job.target_language,
-                "style_guide": legacy_job.style_guide,
-                "glossary_terms": legacy_job.glossary_terms or [],
-            }
-        )
+        if content_profile:
+            payload["content_profile"] = content_profile
+        return payload
+
+    if job_type == "translation":
+        if source_language:
+            payload["source_language"] = source_language
+        if target_language:
+            payload["target_language"] = target_language
+        payload["style_guide"] = style_guide
+        payload["glossary_terms"] = glossary_terms or []
 
     return payload
 
 
-def _get_legacy_job_for_unified_job(unified_job: UnifiedJob, db: Session) -> Any:
-    spec = _get_job_spec(unified_job.job_type)
-    legacy_model = spec["legacy_model"]
-    legacy_job = (
-        db.query(legacy_model)
-        .filter(legacy_model.id == unified_job.legacy_job_id)
-        .first()
+def _create_unified_job(
+    db,
+    *,
+    job_type: str,
+    subject_id: str,
+    payload: Dict[str, Any],
+) -> UnifiedJob:
+    spec = _get_job_spec(job_type)
+    compatibility_id = str(uuid4())
+    unified_job = UnifiedJob(
+        id=compatibility_id,
+        legacy_job_table=spec["legacy_table"],
+        legacy_job_id=compatibility_id,
+        job_type=job_type,
+        subject_type=spec["subject_type"],
+        subject_id=str(subject_id),
+        status=JOB_STATUS_PENDING,
+        priority=100,
+        payload=payload,
+        progress=0.0,
+        attempt_count=0,
     )
-    if not legacy_job:
-        raise ValueError(
-            f"Legacy {unified_job.job_type} job not found for unified job {unified_job.id}"
-        )
-    return legacy_job
+    db.add(unified_job)
+    db.flush()
+    return unified_job
 
 
-def _get_unified_job(db: Session, job_id: str, *, job_type: Optional[str] = None) -> UnifiedJob:
+def _get_unified_job(db, job_id: str, *, job_type: Optional[str] = None) -> UnifiedJob:
     query = db.query(UnifiedJob).filter(UnifiedJob.id == job_id)
     if job_type:
         query = query.filter(UnifiedJob.job_type == job_type)
@@ -130,7 +135,7 @@ def _get_unified_job(db: Session, job_id: str, *, job_type: Optional[str] = None
     return unified_job
 
 
-def _get_unified_job_for_legacy_id(db: Session, job_type: str, legacy_job_id: str) -> UnifiedJob:
+def _get_unified_job_for_legacy_id(db, job_type: str, legacy_job_id: str) -> UnifiedJob:
     unified_job = (
         db.query(UnifiedJob)
         .filter(UnifiedJob.job_type == job_type)
@@ -142,35 +147,9 @@ def _get_unified_job_for_legacy_id(db: Session, job_type: str, legacy_job_id: st
     return unified_job
 
 
-def _sync_unified_from_legacy(unified_job: UnifiedJob, legacy_job: Any, *, job_type: str) -> None:
-    spec = _get_job_spec(job_type)
-    unified_job.job_type = job_type
-    unified_job.subject_type = spec["subject_type"]
-    unified_job.subject_id = str(getattr(legacy_job, spec["subject_key"]))
-    unified_job.payload = _build_unified_payload_from_legacy(job_type, legacy_job)
-    unified_job.status = legacy_job.status
-    unified_job.worker_id = legacy_job.worker_id
-    unified_job.lease_expires_at = legacy_job.lease_expires_at
-    unified_job.created_at = legacy_job.created_at
-    unified_job.started_at = legacy_job.started_at
-    unified_job.completed_at = legacy_job.completed_at
-    unified_job.processing_time_seconds = legacy_job.processing_time_seconds
-    unified_job.error_details = legacy_job.error_details
-
-
-def _sync_legacy_from_unified(unified_job: UnifiedJob, legacy_job: Any) -> None:
-    legacy_job.status = unified_job.status
-    legacy_job.worker_id = unified_job.worker_id
-    legacy_job.lease_expires_at = unified_job.lease_expires_at
-    legacy_job.started_at = unified_job.started_at
-    legacy_job.completed_at = unified_job.completed_at
-    legacy_job.processing_time_seconds = unified_job.processing_time_seconds
-    legacy_job.error_details = unified_job.error_details
-
-
 def _close_active_attempts(
     unified_job: UnifiedJob,
-    db: Session,
+    db,
     *,
     now: datetime,
     status: str,
@@ -190,7 +169,7 @@ def _close_active_attempts(
         attempt.error_details = {"error": error_message}
 
 
-def _start_attempt(unified_job: UnifiedJob, worker_id: str, db: Session, *, now: datetime) -> None:
+def _start_attempt(unified_job: UnifiedJob, worker_id: str, db, *, now: datetime) -> None:
     _close_active_attempts(
         unified_job,
         db,
@@ -212,7 +191,7 @@ def _start_attempt(unified_job: UnifiedJob, worker_id: str, db: Session, *, now:
     )
 
 
-def _get_active_attempt(unified_job: UnifiedJob, db: Session) -> Optional[JobAttempt]:
+def _get_active_attempt(unified_job: UnifiedJob, db) -> Optional[JobAttempt]:
     return (
         db.query(JobAttempt)
         .filter(
@@ -235,7 +214,7 @@ def _ensure_worker_owns_job(unified_job: UnifiedJob, worker_id: str) -> None:
         )
 
 
-def _finalize_expired_cancellations(job_type: str, db: Session, *, now: datetime) -> None:
+def _finalize_expired_cancellations(job_type: str, db, *, now: datetime) -> None:
     expired_jobs = (
         db.query(UnifiedJob)
         .filter(
@@ -247,12 +226,10 @@ def _finalize_expired_cancellations(job_type: str, db: Session, *, now: datetime
         .all()
     )
     for unified_job in expired_jobs:
-        legacy_job = _get_legacy_job_for_unified_job(unified_job, db)
         unified_job.status = JOB_STATUS_CANCELLED
         unified_job.completed_at = now
         unified_job.worker_id = None
         unified_job.lease_expires_at = None
-        unified_job.processing_time_seconds = unified_job.processing_time_seconds
         unified_job.error_details = {
             **(unified_job.error_details or {}),
             "error": "Job cancelled after worker lease expired",
@@ -264,10 +241,9 @@ def _finalize_expired_cancellations(job_type: str, db: Session, *, now: datetime
             status=ATTEMPT_STATUS_CANCELLED,
             error_message="Cancellation completed after worker lease expired",
         )
-        _sync_legacy_from_unified(unified_job, legacy_job)
 
 
-def _claimable_job_query(job_type: str, db: Session, *, now: datetime):
+def _claimable_job_query(job_type: str, db, *, now: datetime):
     return (
         db.query(UnifiedJob)
         .filter(
@@ -337,22 +313,13 @@ def _publish_job_update(unified_job: UnifiedJob) -> None:
 def claim_next_job(job_type: str, worker_id: str) -> Optional[Dict[str, Any]]:
     db = SessionLocal()
     try:
-        now = datetime.utcnow()
+        now = _utcnow()
         _finalize_expired_cancellations(job_type, db, now=now)
         unified_job = _claimable_job_query(job_type, db, now=now).with_for_update(skip_locked=True).first()
         if not unified_job:
             db.commit()
             return None
 
-        legacy_job = _get_legacy_job_for_unified_job(unified_job, db)
-        unified_job.status = JOB_STATUS_PROCESSING
-        unified_job.worker_id = worker_id
-        unified_job.started_at = now
-        unified_job.completed_at = None
-        unified_job.lease_expires_at = _lease_expiration()
-        unified_job.progress = 0.0
-        unified_job.error_details = None
-        _sync_unified_from_legacy(unified_job, legacy_job, job_type=job_type)
         unified_job.status = JOB_STATUS_PROCESSING
         unified_job.worker_id = worker_id
         unified_job.started_at = now
@@ -361,7 +328,6 @@ def claim_next_job(job_type: str, worker_id: str) -> Optional[Dict[str, Any]]:
         unified_job.progress = 0.0
         unified_job.error_details = None
         _start_attempt(unified_job, worker_id, db, now=now)
-        _sync_legacy_from_unified(unified_job, legacy_job)
         db.commit()
         db.refresh(unified_job)
         queue_wait_seconds = max((now - unified_job.created_at).total_seconds(), 0.0)
@@ -398,8 +364,6 @@ def heartbeat_job(job_id: str, worker_id: str, *, job_type: Optional[str] = None
         unified_job = _get_unified_job(db, job_id, job_type=job_type)
         _ensure_worker_owns_job(unified_job, worker_id)
         unified_job.lease_expires_at = _lease_expiration()
-        legacy_job = _get_legacy_job_for_unified_job(unified_job, db)
-        _sync_legacy_from_unified(unified_job, legacy_job)
         db.commit()
         db.refresh(unified_job)
         _publish_job_update(unified_job)
@@ -437,9 +401,7 @@ def ensure_job_not_cancelled(job_id: str, worker_id: str, *, job_type: Optional[
         unified_job = _get_unified_job(db, job_id, job_type=job_type)
         _ensure_worker_owns_job(unified_job, worker_id)
         if unified_job.status in {JOB_STATUS_CANCEL_REQUESTED, JOB_STATUS_CANCELLED}:
-            raise JobCancellationRequestedError(
-                f"Cancellation requested for job {job_id}"
-            )
+            raise JobCancellationRequestedError(f"Cancellation requested for job {job_id}")
     finally:
         db.close()
 
@@ -457,7 +419,7 @@ def complete_job(
         unified_job = _get_unified_job(db, job_id, job_type=job_type)
         _ensure_worker_owns_job(unified_job, worker_id)
 
-        now = datetime.utcnow()
+        now = _utcnow()
         if unified_job.status == JOB_STATUS_CANCEL_REQUESTED:
             unified_job.status = JOB_STATUS_CANCELLED
             unified_job.completed_at = now
@@ -487,8 +449,6 @@ def complete_job(
         unified_job.worker_id = None
         unified_job.lease_expires_at = None
 
-        legacy_job = _get_legacy_job_for_unified_job(unified_job, db)
-        _sync_legacy_from_unified(unified_job, legacy_job)
         db.commit()
         db.refresh(unified_job)
         _publish_job_update(unified_job)
@@ -508,7 +468,7 @@ def fail_job(
     try:
         unified_job = _get_unified_job(db, job_id, job_type=job_type)
         _ensure_worker_owns_job(unified_job, worker_id)
-        now = datetime.utcnow()
+        now = _utcnow()
         unified_job.status = JOB_STATUS_FAILED
         unified_job.completed_at = now
         unified_job.error_details = error_details or {"error": "Unknown error"}
@@ -520,8 +480,6 @@ def fail_job(
             active_attempt.completed_at = now
             active_attempt.error_details = unified_job.error_details
 
-        legacy_job = _get_legacy_job_for_unified_job(unified_job, db)
-        _sync_legacy_from_unified(unified_job, legacy_job)
         db.commit()
         db.refresh(unified_job)
         _publish_job_update(unified_job)
@@ -534,7 +492,7 @@ def request_job_cancellation(job_id: str) -> Dict[str, Any]:
     db = SessionLocal()
     try:
         unified_job = _get_unified_job(db, job_id)
-        now = datetime.utcnow()
+        now = _utcnow()
         if unified_job.status == JOB_STATUS_PENDING:
             unified_job.status = JOB_STATUS_CANCELLED
             unified_job.completed_at = now
@@ -548,12 +506,8 @@ def request_job_cancellation(job_id: str) -> Dict[str, Any]:
                 "error": "Cancellation requested",
             }
         else:
-            raise ValueError(
-                f"Job {job_id} cannot be cancelled from status {unified_job.status}"
-            )
+            raise ValueError(f"Job {job_id} cannot be cancelled from status {unified_job.status}")
 
-        legacy_job = _get_legacy_job_for_unified_job(unified_job, db)
-        _sync_legacy_from_unified(unified_job, legacy_job)
         db.commit()
         db.refresh(unified_job)
         _publish_job_update(unified_job)
@@ -567,9 +521,7 @@ def retry_job(job_id: str) -> Dict[str, Any]:
     try:
         unified_job = _get_unified_job(db, job_id)
         if unified_job.status not in {JOB_STATUS_FAILED, JOB_STATUS_CANCELLED}:
-            raise ValueError(
-                f"Job {job_id} is not retryable from status {unified_job.status}"
-            )
+            raise ValueError(f"Job {job_id} is not retryable from status {unified_job.status}")
 
         unified_job.status = JOB_STATUS_PENDING
         unified_job.worker_id = None
@@ -580,8 +532,6 @@ def retry_job(job_id: str) -> Dict[str, Any]:
         unified_job.error_details = None
         unified_job.progress = 0.0
 
-        legacy_job = _get_legacy_job_for_unified_job(unified_job, db)
-        _sync_legacy_from_unified(unified_job, legacy_job)
         db.commit()
         db.refresh(unified_job)
         _publish_job_update(unified_job)
@@ -604,15 +554,6 @@ def get_job_attempts(job_id: str) -> list[JobAttempt]:
         db.close()
 
 
-def _get_created_unified_job_for_legacy(db: Session, job_type: str, legacy_job_id: str) -> UnifiedJob:
-    unified_job = _get_unified_job_for_legacy_id(db, job_type, legacy_job_id)
-    legacy_job = _get_legacy_job_for_unified_job(unified_job, db)
-    _sync_unified_from_legacy(unified_job, legacy_job, job_type=job_type)
-    db.commit()
-    db.refresh(unified_job)
-    return unified_job
-
-
 def create_transcription_job_for_video(video_id: str) -> Dict[str, Any]:
     db = SessionLocal()
     try:
@@ -620,8 +561,14 @@ def create_transcription_job_for_video(video_id: str) -> Dict[str, Any]:
         if not video:
             raise ValueError(f"Video not found: {video_id}")
 
-        legacy_job = create_transcription_job_row(video_id, db)
-        unified_job = _get_created_unified_job_for_legacy(db, "transcription", str(legacy_job.id))
+        unified_job = _create_unified_job(
+            db,
+            job_type="transcription",
+            subject_id=video_id,
+            payload=_build_payload("transcription", video_id),
+        )
+        db.commit()
+        db.refresh(unified_job)
         _publish_job_update(unified_job)
         return serialize_job(unified_job)
     finally:
@@ -656,12 +603,18 @@ def create_summarization_job_for_transcript(
             if (payload.get("content_profile") or None) == (content_profile or None):
                 return serialize_job(unified_job)
 
-        legacy_job = create_summarization_job_row(
-            transcript_id,
+        unified_job = _create_unified_job(
             db,
-            content_profile=content_profile,
+            job_type="summarization",
+            subject_id=transcript_id,
+            payload=_build_payload(
+                "summarization",
+                transcript_id,
+                content_profile=content_profile,
+            ),
         )
-        unified_job = _get_created_unified_job_for_legacy(db, "summarization", str(legacy_job.id))
+        db.commit()
+        db.refresh(unified_job)
         _publish_job_update(unified_job)
         return serialize_job(unified_job)
     finally:
@@ -699,15 +652,21 @@ def create_translation_job_for_transcript(
             if same_style_guide and same_glossary_terms:
                 return serialize_job(unified_job)
 
-        legacy_job = create_translation_job_row(
-            transcript_id,
-            target_language,
-            source_language,
-            style_guide=style_guide,
-            glossary_terms=glossary_terms,
-            db=db,
+        unified_job = _create_unified_job(
+            db,
+            job_type="translation",
+            subject_id=transcript_id,
+            payload=_build_payload(
+                "translation",
+                transcript_id,
+                source_language=source_language,
+                target_language=target_language,
+                style_guide=style_guide,
+                glossary_terms=glossary_terms,
+            ),
         )
-        unified_job = _get_created_unified_job_for_legacy(db, "translation", str(legacy_job.id))
+        db.commit()
+        db.refresh(unified_job)
         _publish_job_update(unified_job)
         return serialize_job(unified_job)
     finally:

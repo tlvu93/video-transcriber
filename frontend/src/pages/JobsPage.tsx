@@ -63,7 +63,8 @@ function JobCard({
             Unified job {job.id.slice(0, 8)}
           </h2>
           <p className="mt-2 text-muted-foreground text-sm">
-            Legacy source: {job.legacy_job_table} / {job.legacy_job_id.slice(0, 8)}
+            Tracking {job.subject_type} {job.subject_id.slice(0, 8)} across the
+            current orchestration lifecycle.
           </p>
         </div>
 
@@ -166,6 +167,11 @@ function JobCard({
 
       {isExpanded && (
         <div className="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+          <div className="mb-4 flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+              Unified job ID: {job.id}
+            </span>
+          </div>
           {attemptsQuery.isPending ? (
             <p className="text-muted-foreground text-sm">Loading attempts...</p>
           ) : attemptsQuery.isError ? (

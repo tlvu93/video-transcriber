@@ -154,6 +154,12 @@ Runtime entrypoints and Python source now live under `backend.app.*`, while `ser
    docker compose up
    ```
 
+4. Run the default verification suite before shipping local changes:
+
+   ```bash
+   make verify
+   ```
+
 ### Dynamic Video Directory Mounting
 
 The application supports automatically mounting multiple video directories from your host machine. This allows you to process videos from different locations without manually copying them.
@@ -183,6 +189,7 @@ docker compose up
 
 For detailed configuration options, see [docs/operations/docker-volumes.md](docs/operations/docker-volumes.md).
 For backup and restore usage, see [docs/operations/backup-restore.md](docs/operations/backup-restore.md).
+For maintenance commands, see [docs/operations/production-notes.md](docs/operations/production-notes.md).
 
 ## Usage
 

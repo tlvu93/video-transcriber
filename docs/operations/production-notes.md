@@ -44,6 +44,13 @@ Recommended sequence:
 - API and worker logging now use a shared structured logger with service names and request IDs.
 - `/healthz` checks API/database readiness and reports the active storage backend.
 - `/metrics` aggregates persisted local operational metrics such as request latency, queue wait time, worker processing time, search latency, export time, and translation cache-hit signals.
+- `python -m backend.app.entrypoints.maintenance purge-metrics --older-than-hours 720` removes stale metric samples from the local database.
+- `python -m backend.app.entrypoints.maintenance rebuild-search-index` rebuilds transcript search rows from canonical transcript segment rows.
+
+## Verification
+
+- Local runtime versions now align with `.python-version` and `.node-version`.
+- `make verify` runs backend tests plus frontend tests and frontend type checks using the standardized npm workflow.
 
 ## Backup and Restore
 

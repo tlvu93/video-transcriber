@@ -7,6 +7,8 @@ Create Date: 2026-03-12 01:05:00
 
 from __future__ import annotations
 
+from datetime import datetime
+import json
 from typing import Any, Dict, List
 
 from alembic import op
@@ -19,6 +21,17 @@ branch_labels = None
 depends_on = None
 
 
+def _coerce_datetime(value: Any) -> Any:
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    return value
+
+
 def _normalize_segment_id(raw_segment_id: Any, fallback_index: int) -> int:
     try:
         return int(raw_segment_id)
@@ -27,6 +40,12 @@ def _normalize_segment_id(raw_segment_id: Any, fallback_index: int) -> int:
 
 
 def _normalize_segments(raw_segments: Any, fallback_content: str | None) -> List[Dict[str, Any]]:
+    if isinstance(raw_segments, str):
+        try:
+            raw_segments = json.loads(raw_segments)
+        except json.JSONDecodeError:
+            raw_segments = []
+
     segments = raw_segments if isinstance(raw_segments, list) else []
     if not segments and fallback_content:
         segments = [
@@ -173,8 +192,8 @@ def upgrade() -> None:
                     "end_time": segment["end_time"],
                     "text": segment["text"],
                     "speaker": segment["speaker"],
-                    "created_at": row["created_at"],
-                    "updated_at": row["created_at"],
+                    "created_at": _coerce_datetime(row["created_at"]),
+                    "updated_at": _coerce_datetime(row["created_at"]),
                 }
             )
 
@@ -199,8 +218,8 @@ def upgrade() -> None:
                     "end_time": segment["end_time"],
                     "text": segment["text"],
                     "speaker": segment["speaker"],
-                    "created_at": row["created_at"],
-                    "updated_at": row["created_at"],
+                    "created_at": _coerce_datetime(row["created_at"]),
+                    "updated_at": _coerce_datetime(row["created_at"]),
                 }
             )
 

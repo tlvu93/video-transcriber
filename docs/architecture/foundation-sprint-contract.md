@@ -125,19 +125,19 @@ Request example:
 
 Behavior:
 
-- `storage_path` is stored as the canonical absolute on-disk path for the video
+- `storage_path` is the registration-time storage identity input and is normalized into `video_storage_objects`
 - identity matching prefers `storage_path`, then `file_hash`
 - filename-only matching remains fallback-only when neither `storage_path` nor `file_hash` is provided
 - playback and processing use `storage_path` first
-- recursive directory search fallback has been removed; legacy rows without `storage_path` must resolve through configured storage roots
+- recursive directory search fallback has been removed; path resolution now relies on canonical storage objects and configured storage roots
 
 ## Transcript Editing
 
-- `transcripts.speaker_aliases` persists server-side speaker display names as JSON.
+- `speakers` persists canonical server-side speaker display names.
 - `transcripts.review_status` and `transcripts.review_assignee` persist shared review state.
 - `transcript_revisions` stores immutable edit snapshots for original transcripts.
 - `transcript_comments` stores timestamp-linked review comments.
-- `transcript_segments` and `translated_transcript_segments` are additive normalized mirrors of the JSON segment payloads.
+- `transcript_segments` and `translated_transcript_segments` are the canonical editable segment stores.
 - `PUT /transcripts/{transcript_id}/speaker-aliases` updates persisted speaker aliases.
 - `PATCH /transcripts/{transcript_id}/review` updates review status and assignee.
 - `GET /transcripts/{transcript_id}/comments` lists review comments.
@@ -149,14 +149,14 @@ Behavior:
 ## Translation Controls
 
 - `POST /translation-jobs` accepts additive `style_guide` and `glossary_terms` fields for per-request localization control.
-- `translation_jobs.style_guide` and `translation_jobs.glossary_terms` persist the requested translation context.
-- `translated_transcripts.style_guide`, `translated_transcripts.glossary_terms`, and `translated_transcripts.qa_metrics` persist the applied localization context and subtitle QA readout.
+- `jobs.payload.style_guide` and `jobs.payload.glossary_terms` persist the requested translation context for compatibility routes and worker processing.
+- `style_guides`, `glossary_terms`, and `translated_transcripts.qa_metrics` persist the applied localization context and subtitle QA readout.
 - Subtitle QA currently records long-line, high-CPS, overlap, and missing-speaker warnings.
 
 ## Summary AI Controls
 
 - `POST /summarization-jobs` accepts an additive `content_profile` field with `generic`, `meeting`, `podcast`, `lecture`, and `interview` as the supported values.
-- `summarization_jobs.content_profile` persists the requested profile when the user explicitly chooses one.
+- `jobs.payload.content_profile` persists the requested profile when the user explicitly chooses one.
 - `summaries.content_profile` stores the effective profile used for the completed output.
 - `summaries.summary_metadata` stores structured AI enrichments, including headline, overview, key points, chapters, highlights, keywords, action items, named entities, open questions, and risks.
 - `summary_variants` stores named rendered variants for the same summary output so downstream UI/export flows do not need to re-derive them from markdown.
@@ -164,7 +164,7 @@ Behavior:
 ## Search Read Model
 
 - Transcript JSON remains the API compatibility payload.
-- The backend now mirrors transcript and translated transcript segments into normalized relational tables for future editing and QA flows.
+- The backend now projects transcript and translated transcript segment payloads from normalized relational tables for editing and QA flows.
 - The API maintains a `transcript_segment_search` table with PostgreSQL FTS and trigram indexes for `/search?q=` queries.
 - `/search` now supports additive filters for `language_code`, `review_status`, `speaker`, `video_id`, and `video_title`.
 - Search result items now also expose transcript `language_code` and `review_status`.
@@ -199,7 +199,7 @@ Behavior:
 
 ## Canonical Jobs API
 
-- `jobs` and `job_attempts` are now the canonical orchestration write/read path, with legacy job tables retained as synchronized compatibility mirrors.
+- `jobs` and `job_attempts` are now the canonical orchestration write/read path.
 - `GET /jobs` lists canonical jobs with shared filters for `job_type`, `status`, `subject_type`, and `subject_id`.
 - `GET /jobs/{job_id}` returns one canonical job payload.
 - `GET /jobs/{job_id}/attempts` returns execution attempts in reverse chronological order.

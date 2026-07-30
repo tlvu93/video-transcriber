@@ -144,3 +144,22 @@ def summarize_metric_events(*, lookback_hours: Optional[int] = None) -> Dict[str
         "sources": dict(source_totals),
         "recent_events": recent_events,
     }
+
+
+def purge_metric_events(*, older_than_hours: int) -> int:
+    from backend.app.persistence.database import SessionLocal
+    from backend.app.persistence.models import OperationalMetricEvent
+
+    cutoff = datetime.utcnow() - timedelta(hours=older_than_hours)
+
+    db = SessionLocal()
+    try:
+        deleted_count = (
+            db.query(OperationalMetricEvent)
+            .filter(OperationalMetricEvent.recorded_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        return int(deleted_count or 0)
+    finally:
+        db.close()

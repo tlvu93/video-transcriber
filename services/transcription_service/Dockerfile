@@ -11,10 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     ffmpeg \
-    && curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.74.1 \
+    && curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable \
     && . "$HOME/.cargo/env" \
-    && rustup install 1.67.0 \
-    && rustup default 1.67.0 \
+    && rustup update stable \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure Rust is in PATH for all future layers

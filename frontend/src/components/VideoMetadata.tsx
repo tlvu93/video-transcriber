@@ -18,11 +18,11 @@ interface VideoMetadataProps {
 
 function MetadataItem({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
+    <div className="min-w-0 rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
       <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
         {label}
       </p>
-      <p className="mt-2 text-foreground text-sm">{value}</p>
+      <p className="mt-2 break-words text-foreground text-sm">{value}</p>
     </div>
   );
 }
@@ -129,12 +129,12 @@ export default function VideoMetadata({
   return (
     <section className="panel overflow-hidden">
       <div className="border-white/10 border-b px-5 py-4">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1 basis-56">
             <p className="font-semibold text-primary/80 text-xs uppercase tracking-[0.24em]">
               Video details
             </p>
-            <h2 className="mt-2 font-semibold text-2xl text-foreground tracking-tight">
+            <h2 className="mt-2 break-words font-semibold text-2xl text-foreground tracking-tight">
               {video.filename}
             </h2>
           </div>
@@ -159,7 +159,7 @@ export default function VideoMetadata({
         </div>
       </div>
 
-      <div className="grid gap-3 p-5 sm:grid-cols-2">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] gap-3 p-5">
         {detailItems.map((item) => (
           <MetadataItem
             key={item.label}

@@ -6,10 +6,19 @@ import {
   useEffect,
   useState,
 } from "react";
-import { Link } from "react-router-dom";
 import { fetchVideoListPage } from "../api/videoService";
 import { useAppShell } from "../components/AppShellContext";
 import LibraryEmptyState from "../components/LibraryEmptyState";
+import LibraryControls from "../components/library/LibraryControls";
+import LibraryPagination from "../components/library/LibraryPagination";
+import SavedViewsPanel from "../components/library/SavedViewsPanel";
+import StatCard from "../components/library/StatCard";
+import {
+  DEFAULT_LIBRARY_PREFERENCES,
+  type LibraryPreferences,
+  type SavedLibraryView,
+} from "../components/library/types";
+import VideoTile from "../components/library/VideoTile";
 import ProcessingQueue from "../components/ProcessingQueue";
 import VideoLibraryTable from "../components/VideoLibraryTable";
 import {
@@ -18,144 +27,10 @@ import {
 } from "../components/WorkspaceStates";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { useVideoListLiveUpdates } from "../hooks/useLiveUpdates";
-import { formatDuration, formatRelativeDate } from "../utils/formatters";
-import { getVideoStatusMeta } from "../utils/status";
 
 const PAGE_SIZE = 12;
 const LIBRARY_PREFERENCES_KEY = "video-transcriber.library-preferences";
 const LIBRARY_SAVED_VIEWS_KEY = "video-transcriber.library-saved-views";
-
-type LibraryDateFilter = "all" | "1" | "7" | "30";
-type LibrarySortOrder = "newest" | "oldest" | "name";
-type LibraryStatusFilter = "all" | "processing" | "ready" | "failed";
-type LibraryViewMode = "card" | "table";
-
-interface LibraryPreferences {
-  dateFilter: LibraryDateFilter;
-  query: string;
-  sortOrder: LibrarySortOrder;
-  statusFilter: LibraryStatusFilter;
-  viewMode: LibraryViewMode;
-}
-
-interface SavedLibraryView extends LibraryPreferences {
-  id: string;
-  label: string;
-}
-
-const DEFAULT_LIBRARY_PREFERENCES: LibraryPreferences = {
-  dateFilter: "all",
-  query: "",
-  sortOrder: "newest",
-  statusFilter: "all",
-  viewMode: "card",
-};
-
-function StatCard({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  tone: string;
-  value: number;
-}) {
-  return (
-    <div className="stat-card">
-      <div
-        className={`pointer-events-none absolute inset-0 bg-gradient-to-br opacity-30 ${tone}`}
-      />
-      <div className="relative">
-        <p className="font-semibold text-muted-foreground text-xs uppercase tracking-[0.24em]">
-          {label}
-        </p>
-        <p className="mt-4 font-semibold text-4xl text-foreground tracking-tight">
-          {value}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function VideoTile({
-  filename,
-  id,
-  createdAt,
-  duration,
-  status,
-}: {
-  createdAt: string;
-  duration: number | null | undefined;
-  filename: string;
-  id: string;
-  status: string;
-}) {
-  const statusMeta = getVideoStatusMeta(status);
-
-  return (
-    <Link
-      className="group panel relative overflow-hidden p-5 transition duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-glow"
-      to={`/videos/${id}`}
-    >
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(245,158,11,0.18),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.04),transparent_38%)] opacity-60 transition duration-300 group-hover:opacity-100" />
-      <div className="relative">
-        <div className="flex items-start justify-between gap-3">
-          <span className={`status-chip ${statusMeta.badgeClassName}`}>
-            <span className="h-2 w-2 rounded-full bg-current" />
-            {statusMeta.label}
-          </span>
-          <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 font-semibold text-[10px] text-muted-foreground uppercase tracking-[0.18em]">
-            {formatRelativeDate(createdAt)}
-          </span>
-        </div>
-
-        <div className="mt-5 flex aspect-video items-center justify-center rounded-[1.25rem] border border-white/10 bg-[linear-gradient(145deg,rgba(245,158,11,0.12),rgba(15,23,42,0.3)_42%,rgba(56,189,248,0.10))]">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full border border-white/10 bg-slate-950/50 text-primary shadow-lg">
-            <svg
-              aria-hidden="true"
-              className="h-7 w-7"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path d="M8 6.82v10.36a1 1 0 001.52.85l8.14-5.18a1 1 0 000-1.7L9.52 5.97A1 1 0 008 6.82z" />
-            </svg>
-          </div>
-        </div>
-
-        <h2 className="mt-5 line-clamp-2 font-semibold text-foreground text-xl tracking-tight">
-          {filename}
-        </h2>
-
-        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-          <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
-            <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
-              Duration
-            </p>
-            <p className="mt-2 text-foreground">{formatDuration(duration)}</p>
-          </div>
-          <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
-            <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
-              Video ID
-            </p>
-            <p className="mt-2 truncate font-mono text-foreground text-xs">
-              {id.slice(0, 8)}
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-5 flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Added {formatRelativeDate(createdAt)}
-          </span>
-          <span className="font-medium text-primary transition group-hover:translate-x-1">
-            Open workspace
-          </span>
-        </div>
-      </div>
-    </Link>
-  );
-}
 
 export default function VideoListPage() {
   const { openUploadModal } = useAppShell();
@@ -459,215 +334,41 @@ export default function VideoListPage() {
 
         {stats.total_videos > 0 ? (
           <div className="panel mb-5 space-y-4 p-4">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex rounded-full border border-white/10 bg-white/5 p-1">
-                  <button
-                    className={`rounded-full px-4 py-2 font-medium text-sm transition ${
-                      libraryPreferences.viewMode === "card"
-                        ? "bg-primary text-primary-foreground shadow-glow"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                    onClick={() =>
-                      updateLibraryPreferences(
-                        { viewMode: "card" },
-                        { resetPage: false }
-                      )
-                    }
-                    type="button"
-                  >
-                    Cards
-                  </button>
-                  <button
-                    className={`rounded-full px-4 py-2 font-medium text-sm transition ${
-                      libraryPreferences.viewMode === "table"
-                        ? "bg-primary text-primary-foreground shadow-glow"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                    onClick={() =>
-                      updateLibraryPreferences(
-                        { viewMode: "table" },
-                        { resetPage: false }
-                      )
-                    }
-                    type="button"
-                  >
-                    Table
-                  </button>
-                </div>
+            <LibraryControls
+              hasActiveFilters={hasActiveFilters}
+              onReset={resetLibraryPreferences}
+              onUpdate={updateLibraryPreferences}
+              pageEnd={pageEnd}
+              pageStart={pageStart}
+              preferences={libraryPreferences}
+              totalFilteredVideos={totalFilteredVideos}
+            />
 
-                <label className="min-w-[240px] flex-1">
-                  <span className="sr-only">Filter by video title</span>
-                  <input
-                    className="w-full rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm outline-none transition placeholder:text-muted-foreground focus:border-primary/40 focus:ring-2 focus:ring-primary/30"
-                    onChange={(event) =>
-                      updateLibraryPreferences({ query: event.target.value })
-                    }
-                    placeholder="Filter by title or filename"
-                    type="search"
-                    value={libraryPreferences.query}
-                  />
-                </label>
-
-                <select
-                  className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/30"
-                  onChange={(event) =>
-                    updateLibraryPreferences({
-                      statusFilter: event.target.value as LibraryStatusFilter,
-                    })
-                  }
-                  value={libraryPreferences.statusFilter}
-                >
-                  <option value="all">All statuses</option>
-                  <option value="processing">Processing</option>
-                  <option value="ready">Ready</option>
-                  <option value="failed">Failed</option>
-                </select>
-
-                <select
-                  className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/30"
-                  onChange={(event) =>
-                    updateLibraryPreferences({
-                      dateFilter: event.target.value as LibraryDateFilter,
-                    })
-                  }
-                  value={libraryPreferences.dateFilter}
-                >
-                  <option value="all">All time</option>
-                  <option value="1">Last 24 hours</option>
-                  <option value="7">Last 7 days</option>
-                  <option value="30">Last 30 days</option>
-                </select>
-
-                <select
-                  className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/30"
-                  onChange={(event) =>
-                    updateLibraryPreferences({
-                      sortOrder: event.target.value as LibrarySortOrder,
-                    })
-                  }
-                  value={libraryPreferences.sortOrder}
-                >
-                  <option value="newest">Newest first</option>
-                  <option value="oldest">Oldest first</option>
-                  <option value="name">Name</option>
-                </select>
-
-                {hasActiveFilters ? (
-                  <button
-                    className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm transition hover:bg-white/10 hover:text-foreground"
-                    onClick={resetLibraryPreferences}
-                    type="button"
-                  >
-                    Reset
-                  </button>
-                ) : null}
-              </div>
-
-              <div className="text-muted-foreground text-sm">
-                Showing {pageStart}-{pageEnd} of {totalFilteredVideos}
-              </div>
-            </div>
-
-            <div className="rounded-[1.25rem] border border-white/8 bg-background/30 p-4">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.18em]">
-                    Saved views
-                  </p>
-                  <p className="mt-2 text-muted-foreground text-sm">
-                    Save a library setup for review queues, recent uploads, or
-                    failure triage.
-                  </p>
-                </div>
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <input
-                    className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-foreground text-sm placeholder:text-muted-foreground/80"
-                    onChange={(event) => setSavedViewName(event.target.value)}
-                    placeholder="Name this view"
-                    type="text"
-                    value={savedViewName}
-                  />
-                  <button
-                    className="rounded-full border border-primary/25 bg-primary/10 px-4 py-2 font-medium text-primary text-sm transition hover:bg-primary hover:text-primary-foreground"
-                    onClick={saveCurrentView}
-                    type="button"
-                  >
-                    Save current view
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-4 flex flex-wrap gap-3">
-                {savedViews.length === 0 ? (
-                  <span className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-muted-foreground text-sm">
-                    No saved views yet
-                  </span>
-                ) : (
-                  savedViews.map((view) => (
-                    <div
-                      className={`flex items-center gap-2 rounded-full border px-2 py-2 ${
-                        view.id === activeSavedViewId
-                          ? "border-primary/25 bg-primary/10"
-                          : "border-white/10 bg-white/5"
-                      }`}
-                      key={view.id}
-                    >
-                      <button
-                        className={`rounded-full px-3 py-1 font-medium text-sm transition ${
-                          view.id === activeSavedViewId
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
-                        onClick={() => applySavedView(view)}
-                        type="button"
-                      >
-                        {view.label}
-                      </button>
-                      <button
-                        aria-label={`Delete saved view ${view.label}`}
-                        className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-muted-foreground text-xs transition hover:bg-white/10 hover:text-foreground"
-                        onClick={() => deleteSavedView(view.id)}
-                        type="button"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
+            <SavedViewsPanel
+              activeSavedViewId={activeSavedViewId}
+              onApply={applySavedView}
+              onDelete={deleteSavedView}
+              onSave={saveCurrentView}
+              onSavedViewNameChange={setSavedViewName}
+              savedViewName={savedViewName}
+              savedViews={savedViews}
+            />
           </div>
         ) : null}
 
         {libraryContent}
 
         {totalFilteredVideos > PAGE_SIZE ? (
-          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-muted-foreground text-sm">
-              Page {page} of {totalPages}
-            </p>
-            <div className="flex items-center gap-3">
-              <button
-                className="rounded-full border border-white/10 bg-white/5 px-4 py-2 font-medium text-sm text-foreground transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={page <= 1}
-                onClick={() => setPage((currentPage) => Math.max(1, currentPage - 1))}
-                type="button"
-              >
-                Previous
-              </button>
-              <button
-                className="rounded-full border border-primary/25 bg-primary/10 px-4 py-2 font-medium text-primary text-sm transition hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={page >= totalPages}
-                onClick={() =>
-                  setPage((currentPage) => Math.min(totalPages, currentPage + 1))
-                }
-                type="button"
-              >
-                Next
-              </button>
-            </div>
-          </div>
+          <LibraryPagination
+            onNext={() =>
+              setPage((currentPage) => Math.min(totalPages, currentPage + 1))
+            }
+            onPrevious={() =>
+              setPage((currentPage) => Math.max(1, currentPage - 1))
+            }
+            page={page}
+            totalPages={totalPages}
+          />
         ) : null}
       </section>
     </div>

@@ -1,9 +1,25 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
+from backend.app.domain.canonical_metadata import (
+    build_glossary_terms_snapshot,
+    build_segments_snapshot_from_rows,
+    build_speaker_alias_snapshot,
+    normalize_glossary_terms,
+    normalize_speaker_aliases,
+    normalize_style_guide,
+    resolve_primary_storage_uri,
+)
 from backend.app.persistence.database import Base
 from sqlalchemy import Boolean, JSON, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
+
+
+_COMPAT_UNSET = object()
+
+
+def _utcnow():
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def generate_uuid():
@@ -19,7 +35,7 @@ class LeasedJobMixin:
 
 
 class UnifiedJob(LeasedJobMixin, Base):
-    """Canonical orchestration record across legacy job tables."""
+    """Canonical orchestration record with compatibility IDs for legacy routes."""
 
     __tablename__ = "jobs"
     __table_args__ = (
@@ -39,7 +55,7 @@ class UnifiedJob(LeasedJobMixin, Base):
     payload = Column(JSON, nullable=True)
     progress = Column(Float, nullable=True)
     attempt_count = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     processing_time_seconds = Column(Float, nullable=True)
@@ -67,11 +83,11 @@ class JobAttempt(Base):
     attempt_number = Column(Integer, nullable=False)
     worker_id = Column(String, nullable=True)
     status = Column(String, default="processing")
-    started_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=_utcnow)
     completed_at = Column(DateTime, nullable=True)
     processing_time_seconds = Column(Float, nullable=True)
     error_details = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     job = relationship("UnifiedJob", back_populates="attempts")
 
@@ -83,25 +99,40 @@ class Video(Base):
     __table_args__ = (
         Index("ix_videos_filename", "filename"),
         Index("ix_videos_file_hash", "file_hash"),
-        UniqueConstraint("storage_path", name="uq_videos_storage_path"),
     )
 
     id = Column(String, primary_key=True, default=generate_uuid)
     filename = Column(String, nullable=False)
     file_hash = Column(String, nullable=True)
-    storage_path = Column(String, nullable=True)
     status = Column(String, default="pending")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
     video_metadata = Column(JSON, default=dict)
 
     transcripts = relationship("Transcript", back_populates="video")
-    transcription_jobs = relationship("TranscriptionJob", back_populates="video")
     storage_objects = relationship(
         "VideoStorageObject",
         back_populates="video",
         cascade="all, delete-orphan",
         order_by="VideoStorageObject.created_at.desc()",
     )
+
+    def __init__(self, **kwargs):
+        storage_path = kwargs.pop("storage_path", _COMPAT_UNSET)
+        super().__init__(**kwargs)
+        if storage_path is not _COMPAT_UNSET:
+            self.storage_path = storage_path
+
+    @property
+    def storage_path(self):
+        override = getattr(self, "_storage_path_override", _COMPAT_UNSET)
+        if override is not _COMPAT_UNSET:
+            return override
+        return resolve_primary_storage_uri(self.storage_objects or [])
+
+    @storage_path.setter
+    def storage_path(self, value):
+        normalized_value = str(value).strip() if value is not None else None
+        self._storage_path_override = normalized_value or None
 
 
 class VideoStorageObject(Base):
@@ -123,8 +154,8 @@ class VideoStorageObject(Base):
     storage_uri = Column(String, nullable=False)
     content_hash = Column(String, nullable=True)
     is_primary = Column(Boolean, nullable=False, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     video = relationship("Video", back_populates="storage_objects")
 
@@ -146,11 +177,9 @@ class Transcript(Base):
     format = Column(String, default="txt")
     status = Column(String, default="pending")
     language_code = Column(String, nullable=True)
-    speaker_aliases = Column(JSON, nullable=True)
     review_status = Column(String, default="draft")
     review_assignee = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    segments = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
 
     video = relationship("Video", back_populates="transcripts")
     revisions = relationship(
@@ -166,9 +195,7 @@ class Transcript(Base):
         order_by="TranscriptSegmentRow.segment_index.asc()",
     )
     summaries = relationship("Summary", back_populates="transcript")
-    summarization_jobs = relationship("SummarizationJob", back_populates="transcript")
     translations = relationship("TranslatedTranscript", back_populates="transcript")
-    translation_jobs = relationship("TranslationJob", back_populates="transcript")
     search_segments = relationship(
         "TranscriptSegmentSearch",
         back_populates="transcript",
@@ -186,6 +213,41 @@ class Transcript(Base):
         cascade="all, delete-orphan",
         order_by="Speaker.speaker_key.asc()",
     )
+
+    def __init__(self, **kwargs):
+        segments = kwargs.pop("segments", _COMPAT_UNSET)
+        speaker_aliases = kwargs.pop("speaker_aliases", _COMPAT_UNSET)
+        super().__init__(**kwargs)
+        if segments is not _COMPAT_UNSET:
+            self.segments = segments
+        if speaker_aliases is not _COMPAT_UNSET:
+            self.speaker_aliases = speaker_aliases
+
+    @property
+    def segments(self):
+        override = getattr(self, "_segments_override", _COMPAT_UNSET)
+        if override is not _COMPAT_UNSET:
+            return override
+        if self.segment_rows:
+            return build_segments_snapshot_from_rows(self.segment_rows)
+        return None
+
+    @segments.setter
+    def segments(self, value):
+        self._segments_override = value if isinstance(value, list) else None
+
+    @property
+    def speaker_aliases(self):
+        override = getattr(self, "_speaker_aliases_override", _COMPAT_UNSET)
+        if override is not _COMPAT_UNSET:
+            return override
+        if self.speakers:
+            return build_speaker_alias_snapshot(self.speakers)
+        return {}
+
+    @speaker_aliases.setter
+    def speaker_aliases(self, value):
+        self._speaker_aliases_override = normalize_speaker_aliases(value)
 
 
 class TranscriptRevision(Base):
@@ -208,7 +270,7 @@ class TranscriptRevision(Base):
     content = Column(Text, nullable=False)
     segments = Column(JSON, nullable=True)
     speaker_aliases = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     transcript = relationship("Transcript", back_populates="revisions")
 
@@ -227,7 +289,7 @@ class TranscriptComment(Base):
     timestamp_seconds = Column(Float, nullable=True)
     author_name = Column(String, nullable=True)
     body = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     transcript = relationship("Transcript", back_populates="comments")
 
@@ -253,8 +315,8 @@ class TranscriptSegmentRow(Base):
     end_time = Column(Float, nullable=False, default=0)
     text = Column(Text, nullable=False)
     speaker = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     transcript = relationship("Transcript", back_populates="segment_rows")
 
@@ -276,8 +338,8 @@ class Speaker(Base):
     transcript_id = Column(String, ForeignKey("transcripts.id"), nullable=False)
     speaker_key = Column(String, nullable=False)
     display_name = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     transcript = relationship("Transcript", back_populates="speakers")
 
@@ -293,7 +355,7 @@ class Summary(Base):
     content_profile = Column(String, nullable=False, default="generic")
     summary_metadata = Column(JSON, nullable=True)
     status = Column(String, default="pending")  # pending, completed, error
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     transcript = relationship("Transcript", back_populates="summaries")
     variants = relationship(
@@ -320,47 +382,10 @@ class SummaryVariant(Base):
     summary_id = Column(String, ForeignKey("summaries.id"), nullable=False)
     variant_type = Column(String, nullable=False, default="default")
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     summary = relationship("Summary", back_populates="variants")
-
-
-class TranscriptionJob(LeasedJobMixin, Base):
-    """Transcription job model."""
-
-    __tablename__ = "transcription_jobs"
-    __table_args__ = (Index("ix_transcription_jobs_status_created_at", "status", "created_at"),)
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    video_id = Column(String, ForeignKey("videos.id"), nullable=False)
-    status = Column(String, default="pending")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
-    processing_time_seconds = Column(Float, nullable=True)
-    error_details = Column(JSON, nullable=True)
-
-    video = relationship("Video", back_populates="transcription_jobs")
-
-
-class SummarizationJob(LeasedJobMixin, Base):
-    """Summarization job model."""
-
-    __tablename__ = "summarization_jobs"
-    __table_args__ = (Index("ix_summarization_jobs_status_created_at", "status", "created_at"),)
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    transcript_id = Column(String, ForeignKey("transcripts.id"), nullable=False)
-    content_profile = Column(String, nullable=True)
-    status = Column(String, default="pending")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
-    processing_time_seconds = Column(Float, nullable=True)
-    error_details = Column(JSON, nullable=True)
-
-    transcript = relationship("Transcript", back_populates="summarization_jobs")
 
 
 class TranslatedTranscript(Base):
@@ -379,12 +404,9 @@ class TranslatedTranscript(Base):
     transcript_id = Column(String, ForeignKey("transcripts.id"), nullable=False)
     language = Column(String, nullable=False)
     content = Column(Text, nullable=False)
-    segments = Column(JSON, nullable=True)
-    style_guide = Column(Text, nullable=True)
-    glossary_terms = Column(JSON, nullable=True)
     qa_metrics = Column(JSON, nullable=True)
     status = Column(String, default="completed")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     transcript = relationship("Transcript", back_populates="translations")
     segment_rows = relationship(
@@ -405,6 +427,57 @@ class TranslatedTranscript(Base):
         cascade="all, delete-orphan",
         order_by="GlossaryTerm.sort_order.asc()",
     )
+
+    def __init__(self, **kwargs):
+        segments = kwargs.pop("segments", _COMPAT_UNSET)
+        style_guide = kwargs.pop("style_guide", _COMPAT_UNSET)
+        glossary_terms = kwargs.pop("glossary_terms", _COMPAT_UNSET)
+        super().__init__(**kwargs)
+        if segments is not _COMPAT_UNSET:
+            self.segments = segments
+        if style_guide is not _COMPAT_UNSET:
+            self.style_guide = style_guide
+        if glossary_terms is not _COMPAT_UNSET:
+            self.glossary_terms = glossary_terms
+
+    @property
+    def segments(self):
+        override = getattr(self, "_segments_override", _COMPAT_UNSET)
+        if override is not _COMPAT_UNSET:
+            return override
+        if self.segment_rows:
+            return build_segments_snapshot_from_rows(self.segment_rows)
+        return None
+
+    @segments.setter
+    def segments(self, value):
+        self._segments_override = value if isinstance(value, list) else None
+
+    @property
+    def style_guide(self):
+        override = getattr(self, "_style_guide_override", _COMPAT_UNSET)
+        if override is not _COMPAT_UNSET:
+            return override
+        if self.style_guide_row is not None:
+            return self.style_guide_row.content
+        return None
+
+    @style_guide.setter
+    def style_guide(self, value):
+        self._style_guide_override = normalize_style_guide(value)
+
+    @property
+    def glossary_terms(self):
+        override = getattr(self, "_glossary_terms_override", _COMPAT_UNSET)
+        if override is not _COMPAT_UNSET:
+            return override
+        if self.glossary_term_rows:
+            return build_glossary_terms_snapshot(self.glossary_term_rows)
+        return []
+
+    @glossary_terms.setter
+    def glossary_terms(self, value):
+        self._glossary_terms_override = normalize_glossary_terms(value)
 
 
 class TranslatedTranscriptSegmentRow(Base):
@@ -436,8 +509,8 @@ class TranslatedTranscriptSegmentRow(Base):
     end_time = Column(Float, nullable=False, default=0)
     text = Column(Text, nullable=False)
     speaker = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     translated_transcript = relationship(
         "TranslatedTranscript",
@@ -463,8 +536,8 @@ class StyleGuide(Base):
         nullable=False,
     )
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     translated_transcript = relationship(
         "TranslatedTranscript",
@@ -494,35 +567,13 @@ class GlossaryTerm(Base):
     target_term = Column(String, nullable=False)
     notes = Column(Text, nullable=True)
     sort_order = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     translated_transcript = relationship(
         "TranslatedTranscript",
         back_populates="glossary_term_rows",
     )
-
-
-class TranslationJob(LeasedJobMixin, Base):
-    """Translation job model."""
-
-    __tablename__ = "translation_jobs"
-    __table_args__ = (Index("ix_translation_jobs_status_created_at", "status", "created_at"),)
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    transcript_id = Column(String, ForeignKey("transcripts.id"), nullable=False)
-    source_language = Column(String, nullable=True)
-    target_language = Column(String, nullable=False)
-    style_guide = Column(Text, nullable=True)
-    glossary_terms = Column(JSON, nullable=True)
-    status = Column(String, default="pending")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
-    processing_time_seconds = Column(Float, nullable=True)
-    error_details = Column(JSON, nullable=True)
-
-    transcript = relationship("Transcript", back_populates="translation_jobs")
 
 
 class TranscriptSegmentSearch(Base):
@@ -548,8 +599,8 @@ class TranscriptSegmentSearch(Base):
     end_time = Column(Float, nullable=False, default=0)
     text = Column(Text, nullable=False)
     speaker = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     transcript = relationship("Transcript", back_populates="search_segments")
 
@@ -568,4 +619,4 @@ class OperationalMetricEvent(Base):
     metric_source = Column(String, nullable=False)
     metric_value = Column(Float, nullable=False, default=0)
     labels = Column(JSON, nullable=True)
-    recorded_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    recorded_at = Column(DateTime, default=_utcnow, nullable=False)

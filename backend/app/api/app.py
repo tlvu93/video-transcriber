@@ -12,39 +12,45 @@ import time
 import zipfile
 from datetime import datetime
 from datetime import timedelta
-from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
+from backend.app.api.common import PaginatedResponse, build_paginated_response, paginate_items, paginate_query
+from backend.app.api.job_routes import router as job_router
 from backend.app.api.live_updates import build_live_update_filters, live_update_manager
-from backend.app.domain.jobs import (
-    JobLeaseOwnershipError,
-    claim_next_summarization_job,
-    claim_next_transcription_job,
-    claim_next_translation_job,
-    complete_legacy_job,
-    create_summarization_job_for_transcript,
-    create_transcription_job_for_video,
-    create_translation_job_for_transcript,
-    heartbeat_legacy_job,
-    request_job_cancellation,
-    retry_job,
-    retry_legacy_job,
-    fail_legacy_job,
+from backend.app.domain.events import (
+    EVENT_SUMMARY_CREATED,
+    EVENT_TRANSCRIPT_UPDATED,
+    EVENT_TRANSCRIPTION_CREATED,
+    EVENT_TRANSLATED_TRANSCRIPT_UPDATED,
+    EVENT_TRANSLATION_CREATED,
+    EVENT_VIDEO_CREATED,
+    EVENT_VIDEO_UPDATED,
+    publish_live_update,
+)
+from backend.app.domain.records import (
+    canonicalize_storage_path,
+    create_transcript_revision,
+    find_existing_video,
+    merge_video_metadata,
+    normalize_speaker_aliases,
+    normalize_translation_style_guide,
+    resolve_video_storage_path,
+    serialize_summary,
+    serialize_transcript,
+    serialize_translated_transcript,
+    serialize_video as build_video_response,
 )
 from backend.app.persistence.database import engine, get_db
 from backend.app.persistence.models import (
-    JobAttempt,
-    SummarizationJob,
     Summary,
     Transcript,
     TranscriptComment,
     TranscriptRevision,
     TranscriptSegmentSearch,
-    TranscriptionJob,
     TranslatedTranscript,
-    TranslationJob,
-    UnifiedJob,
     Video,
+    VideoStorageObject,
 )
 from backend.app.persistence.search_index import search_transcript_segments, sync_transcript_search_rows
 from backend.app.persistence.segment_sync import (
@@ -75,7 +81,6 @@ from fastapi import (
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, text
-from sqlalchemy.orm import Query as SqlAlchemyQuery
 from sqlalchemy.orm import Session
 
 # Configure logging
@@ -85,20 +90,10 @@ storage_backend = get_storage_backend()
 
 # Create FastAPI app
 app = FastAPI(title="Video Transcriber API")
-
-ItemT = TypeVar("ItemT")
+app.include_router(job_router)
 
 # Ensure directories exist
 os.makedirs(VIDEO_DIR, exist_ok=True)
-
-EVENT_VIDEO_UPDATED = "video.updated"
-EVENT_TRANSCRIPT_UPDATED = "transcript.updated"
-EVENT_TRANSLATED_TRANSCRIPT_UPDATED = "translated_transcript.updated"
-EVENT_VIDEO_CREATED = "video.created"
-EVENT_TRANSCRIPTION_CREATED = "transcription.created"
-EVENT_SUMMARY_CREATED = "summary.created"
-EVENT_TRANSLATION_CREATED = "translation.created"
-EVENT_JOB_STATUS_CHANGED = "job.status.changed"
 
 
 @app.middleware("http")
@@ -170,153 +165,6 @@ async def startup_live_updates() -> None:
 @app.on_event("shutdown")
 async def shutdown_live_updates() -> None:
     await live_update_manager.stop()
-
-
-async def publish_live_update(event_type: str, **payload: Any) -> None:
-    await live_update_manager.publish(
-        {
-            "type": event_type,
-            **{key: value for key, value in payload.items() if value is not None},
-        }
-    )
-
-
-async def publish_job_live_update(
-    job_type: str,
-    job_id: str,
-    status: str,
-    *,
-    video_id: Optional[str] = None,
-    transcript_id: Optional[str] = None,
-    worker_id: Optional[str] = None,
-    lease_expires_at: Optional[datetime] = None,
-) -> None:
-    await publish_live_update(
-        EVENT_JOB_STATUS_CHANGED,
-        job_id=job_id,
-        job_type=job_type,
-        status=status,
-        transcript_id=transcript_id,
-        video_id=video_id,
-        worker_id=worker_id,
-        lease_expires_at=lease_expires_at.isoformat() if lease_expires_at else None,
-    )
-
-
-def get_legacy_job_or_404(
-    db: Session,
-    *,
-    job_type: Literal["summarization", "transcription", "translation"],
-    legacy_job_id: str,
-) -> TranscriptionJob | SummarizationJob | TranslationJob:
-    model_map = {
-        "transcription": TranscriptionJob,
-        "summarization": SummarizationJob,
-        "translation": TranslationJob,
-    }
-    model = model_map[job_type]
-    job = db.query(model).filter(model.id == legacy_job_id).first()
-    if job is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"{job_type.title()} job not found: {legacy_job_id}",
-        )
-    return job
-
-
-def translate_job_domain_error(error: ValueError) -> HTTPException:
-    detail = str(error)
-    status_code = 404 if "not found" in detail.lower() else 400
-    return HTTPException(status_code=status_code, detail=detail)
-
-
-def build_video_response(video: Video) -> Dict[str, Any]:
-    return {
-        "id": str(video.id),
-        "filename": video.filename,
-        "status": video.status,
-        "created_at": video.created_at,
-        "file_hash": video.file_hash,
-        "video_metadata": video.video_metadata,
-        "storage_path": video.storage_path,
-    }
-
-
-def normalize_speaker_aliases(raw_aliases: Optional[Dict[str, Any]]) -> Dict[str, str]:
-    normalized: Dict[str, str] = {}
-    if not isinstance(raw_aliases, dict):
-        return normalized
-
-    for raw_speaker_id, raw_speaker_name in raw_aliases.items():
-        speaker_id = str(raw_speaker_id).strip()
-        if not speaker_id:
-            continue
-
-        speaker_name = str(raw_speaker_name).strip() if raw_speaker_name is not None else ""
-        normalized[speaker_id] = speaker_name or speaker_id
-
-    return normalized
-
-
-def normalize_translation_style_guide(raw_style_guide: Optional[str]) -> Optional[str]:
-    if raw_style_guide is None:
-        return None
-
-    style_guide = raw_style_guide.strip()
-    return style_guide or None
-
-
-def normalize_glossary_terms(
-    raw_terms: Optional[List["TranslationGlossaryTermInput"]],
-) -> List[Dict[str, str]]:
-    normalized_terms: List[Dict[str, str]] = []
-    for raw_term in raw_terms or []:
-        source_term = raw_term.source_term.strip()
-        target_term = raw_term.target_term.strip()
-        if not source_term or not target_term:
-            continue
-
-        normalized_term = {
-            "source_term": source_term,
-            "target_term": target_term,
-        }
-        if raw_term.notes and raw_term.notes.strip():
-            normalized_term["notes"] = raw_term.notes.strip()
-
-        normalized_terms.append(normalized_term)
-
-    return normalized_terms
-
-
-def create_transcript_revision(db: Session, transcript: Transcript, *, reason: str) -> None:
-    if not transcript.id:
-        db.flush()
-
-    next_revision_number = (
-        db.query(func.max(TranscriptRevision.revision_number))
-        .filter(TranscriptRevision.transcript_id == transcript.id)
-        .scalar()
-        or 0
-    ) + 1
-
-    db.add(
-        TranscriptRevision(
-            transcript_id=str(transcript.id),
-            revision_number=int(next_revision_number),
-            reason=reason,
-            content=transcript.content,
-            segments=(
-                build_segments_snapshot_from_rows(list(transcript.segment_rows))
-                if transcript.segment_rows
-                else transcript.segments
-            ),
-            speaker_aliases=(
-                build_speaker_alias_snapshot(list(transcript.speakers))
-                if transcript.speakers
-                else normalize_speaker_aliases(transcript.speaker_aliases)
-            ),
-        )
-    )
 
 
 def build_export_segments(
@@ -795,17 +643,6 @@ def build_transcript_review_package(
     return buffer.getvalue()
 
 
-def resolve_video_storage_path(
-    filename: str,
-    *,
-    storage_path: Optional[str] = None,
-) -> str:
-    return storage_backend.resolve_video_path(
-        filename,
-        storage_uri=storage_path,
-    )
-
-
 def get_video_storage_path(video: Video, db: Session) -> str:
     try:
         resolved_path = resolve_video_storage_path(
@@ -823,51 +660,6 @@ def get_video_storage_path(video: Video, db: Session) -> str:
     return resolved_path
 
 
-def canonicalize_storage_path(storage_path: Optional[str]) -> Optional[str]:
-    """Normalize optional storage paths before comparing or persisting them."""
-    return storage_backend.normalize_uri(storage_path)
-
-
-def merge_video_metadata(
-    existing_metadata: Optional[Dict[str, Any]],
-    incoming_metadata: Optional[Dict[str, Any]],
-    file_hash: Optional[str],
-) -> Dict[str, Any]:
-    """Preserve known metadata while allowing new watcher-provided values to win."""
-    merged_metadata = dict(existing_metadata or {})
-    if file_hash:
-        merged_metadata["file_hash"] = file_hash
-    if incoming_metadata:
-        merged_metadata.update(incoming_metadata)
-    return merged_metadata
-
-
-def find_existing_video(
-    db: Session,
-    *,
-    filename: str,
-    storage_path: Optional[str] = None,
-    file_hash: Optional[str] = None,
-) -> tuple[Optional[Video], Optional[str]]:
-    """Match videos by canonical path first, then by file hash, then by filename fallback."""
-    if storage_path:
-        existing_video = db.query(Video).filter(Video.storage_path == storage_path).first()
-        if existing_video:
-            return existing_video, "storage_path"
-
-    if file_hash:
-        existing_video = db.query(Video).filter(Video.file_hash == file_hash).first()
-        if existing_video:
-            return existing_video, "file_hash"
-
-    if filename and not storage_path and not file_hash:
-        existing_video = db.query(Video).filter(Video.filename == filename).first()
-        if existing_video:
-            return existing_video, "filename"
-
-    return None, None
-
-
 def build_upload_storage_target(filename: str, db: Session):
     """Allocate a non-destructive managed-media target for uploaded files."""
     return storage_backend.prepare_upload_target(
@@ -881,37 +673,6 @@ def build_upload_storage_target(filename: str, db: Session):
     )
 
 
-def paginate_query(query: SqlAlchemyQuery, *, limit: int, offset: int) -> tuple[List[Any], int]:
-    """Paginate an ORM query while preserving the caller's ordering for result rows."""
-    total = query.order_by(None).count()
-    items = query.limit(limit).offset(offset).all()
-    return items, total
-
-
-def paginate_items(items: List[Any], *, limit: int, offset: int) -> tuple[List[Any], int]:
-    """Paginate an in-memory collection when SQL-level pagination is not practical."""
-    total = len(items)
-    return items[offset : offset + limit], total
-
-
-def build_paginated_response(
-    items: List[Any],
-    *,
-    total: int,
-    limit: int,
-    offset: int,
-    **extra: Any,
-) -> Dict[str, Any]:
-    response: Dict[str, Any] = {
-        "items": items,
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-    }
-    response.update(extra)
-    return response
-
-
 def build_video_library_stats(db: Session) -> VideoLibraryStatsResponse:
     status_column = func.lower(Video.status)
     return VideoLibraryStatsResponse(
@@ -919,23 +680,6 @@ def build_video_library_stats(db: Session) -> VideoLibraryStatsResponse:
         processing_videos=db.query(Video).filter(status_column.in_(["pending", "processing"])).count(),
         ready_videos=db.query(Video).filter(status_column.in_(["completed", "transcribed"])).count(),
         failed_videos=db.query(Video).filter(status_column.in_(["error", "failed"])).count(),
-    )
-
-
-def build_summary_response(summary: Summary) -> SummaryResponse:
-    variants = {
-        variant.variant_type: variant.content
-        for variant in (summary.variants or [])
-    }
-    return SummaryResponse(
-        id=str(summary.id),
-        transcript_id=str(summary.transcript_id),
-        content=summary.content,
-        content_profile=summary.content_profile or "generic",
-        summary_metadata=summary.summary_metadata or {},
-        status=summary.status,
-        created_at=summary.created_at,
-        variants=variants,
     )
 
 
@@ -999,64 +743,6 @@ class YoutubeDownloadRequest(BaseModel):
     url: str
 
 
-class TranscriptionJobCreate(BaseModel):
-    video_id: str
-
-
-class TranscriptionJobResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    video_id: str
-    status: str
-    created_at: Any
-    started_at: Optional[Any] = None
-    completed_at: Optional[Any] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
-    worker_id: Optional[str] = None
-    lease_expires_at: Optional[Any] = None
-
-
-class LeaseWorkerRequest(BaseModel):
-    worker_id: str
-
-
-class TranscriptionJobUpdate(LeaseWorkerRequest):
-    status: Optional[str] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
-
-
-class SummarizationJobCreate(BaseModel):
-    transcript_id: str
-    content_profile: Optional[
-        Literal["generic", "interview", "lecture", "meeting", "podcast"]
-    ] = None
-
-
-class SummarizationJobResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    transcript_id: str
-    content_profile: Optional[str] = None
-    status: str
-    created_at: Any
-    started_at: Optional[Any] = None
-    completed_at: Optional[Any] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
-    worker_id: Optional[str] = None
-    lease_expires_at: Optional[Any] = None
-
-
-class SummarizationJobUpdate(LeaseWorkerRequest):
-    status: Optional[str] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
-
-
 class SummaryCreate(BaseModel):
     transcript_id: str
     content: str
@@ -1075,45 +761,6 @@ class SummaryResponse(BaseModel):
     status: str
     created_at: Any
     variants: Dict[str, str]
-
-
-class TranslationGlossaryTermInput(BaseModel):
-    source_term: str
-    target_term: str
-    notes: Optional[str] = None
-
-
-class TranslationJobCreate(BaseModel):
-    transcript_id: str
-    target_language: str
-    source_language: Optional[str] = None
-    style_guide: Optional[str] = None
-    glossary_terms: Optional[List[TranslationGlossaryTermInput]] = None
-
-
-class TranslationJobResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    transcript_id: str
-    source_language: Optional[str]
-    target_language: str
-    style_guide: Optional[str] = None
-    glossary_terms: Optional[List[Dict[str, str]]] = None
-    status: str
-    created_at: Any
-    started_at: Optional[Any] = None
-    completed_at: Optional[Any] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
-    worker_id: Optional[str] = None
-    lease_expires_at: Optional[Any] = None
-
-
-class TranslationJobUpdate(LeaseWorkerRequest):
-    status: Optional[str] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
 
 
 class TranslatedTranscriptCreate(BaseModel):
@@ -1229,51 +876,6 @@ class SearchResultResponse(BaseModel):
     speaker: str
     language_code: Optional[str] = None
     review_status: Optional[str] = None
-
-
-class UnifiedJobResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    legacy_job_table: str
-    legacy_job_id: str
-    job_type: str
-    subject_type: str
-    subject_id: str
-    status: str
-    priority: int
-    payload: Optional[Dict[str, Any]] = None
-    progress: Optional[float] = None
-    attempt_count: int
-    worker_id: Optional[str] = None
-    lease_expires_at: Optional[Any] = None
-    created_at: Any
-    started_at: Optional[Any] = None
-    completed_at: Optional[Any] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
-
-
-class JobAttemptResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    job_id: str
-    attempt_number: int
-    worker_id: Optional[str] = None
-    status: str
-    started_at: Any
-    completed_at: Optional[Any] = None
-    processing_time_seconds: Optional[float] = None
-    error_details: Optional[Dict[str, Any]] = None
-    created_at: Any
-
-
-class PaginatedResponse(BaseModel, Generic[ItemT]):
-    items: List[ItemT]
-    total: int
-    limit: int
-    offset: int
 
 
 class VideoLibraryStatsResponse(BaseModel):
@@ -1550,368 +1152,6 @@ async def check_video_exists(video_check: VideoCheck, db: Session = Depends(get_
     return None
 
 
-@app.post("/transcription-jobs/", response_model=TranscriptionJobResponse)
-async def create_transcription_job_endpoint(job_data: TranscriptionJobCreate, db: Session = Depends(get_db)):
-    """
-    Create a new transcription job.
-    Used by the watcher service.
-
-    Args:
-        job_data: The job data
-        db: Database session
-
-    Returns:
-        The created transcription job
-    """
-    logger.info(f"Creating transcription job for video: {job_data.video_id}")
-
-    # Check if the video exists
-    video = db.query(Video).filter(Video.id == job_data.video_id).first()
-    if not video:
-        raise HTTPException(status_code=404, detail=f"Video not found: {job_data.video_id}")
-
-    try:
-        unified_job = create_transcription_job_for_video(job_data.video_id)
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-
-    return get_legacy_job_or_404(
-        db,
-        job_type="transcription",
-        legacy_job_id=str(unified_job["legacy_job_id"]),
-    )
-
-
-@app.post("/transcription-jobs/claim", response_model=Optional[TranscriptionJobResponse])
-async def claim_transcription_job(request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
-    """Atomically claim the next available transcription job."""
-    unified_job = claim_next_transcription_job(request_data.worker_id)
-    if not unified_job:
-        return None
-
-    return get_legacy_job_or_404(
-        db,
-        job_type="transcription",
-        legacy_job_id=str(unified_job["legacy_job_id"]),
-    )
-
-
-@app.post("/transcription-jobs/{job_id}/heartbeat", response_model=TranscriptionJobResponse)
-async def heartbeat_transcription_job(job_id: str, request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
-    """Refresh a transcription job lease for the owning worker."""
-    try:
-        heartbeat_legacy_job("transcription", job_id, request_data.worker_id)
-        job = get_legacy_job_or_404(db, job_type="transcription", legacy_job_id=job_id)
-    except JobLeaseOwnershipError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-    return job
-
-
-@app.get("/transcription-jobs", response_model=PaginatedResponse[TranscriptionJobResponse])
-async def get_transcription_jobs(
-    status: Optional[str] = None,
-    video_id: Optional[str] = None,
-    limit: int = Query(default=50, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-):
-    """
-    Get all transcription jobs, optionally filtered by status and video_id.
-    Used by the transcription worker and frontend.
-
-    Args:
-        status: Optional status to filter by
-        video_id: Optional video ID to filter by
-        db: Database session
-
-    Returns:
-        List of transcription jobs
-    """
-    query = db.query(TranscriptionJob)
-
-    if status:
-        query = query.filter(TranscriptionJob.status == status)
-    
-    if video_id:
-        query = query.filter(TranscriptionJob.video_id == video_id)
-
-    query = query.order_by(TranscriptionJob.created_at.desc())
-    jobs, total = paginate_query(query, limit=limit, offset=offset)
-    return build_paginated_response(jobs, total=total, limit=limit, offset=offset)
-
-
-@app.get("/transcription-jobs/{job_id}", response_model=TranscriptionJobResponse)
-async def get_transcription_job(job_id: str, db: Session = Depends(get_db)):
-    """
-    Get a transcription job by ID.
-
-    Args:
-        job_id: The ID of the job
-        db: Database session
-
-    Returns:
-        The transcription job
-    """
-    job = db.query(TranscriptionJob).filter(TranscriptionJob.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Transcription job not found: {job_id}")
-    return job
-
-
-@app.post("/transcription-jobs/{job_id}/complete", response_model=TranscriptionJobResponse)
-async def complete_transcription_job(job_id: str, update_data: TranscriptionJobUpdate, db: Session = Depends(get_db)):
-    """
-    Mark a transcription job as completed.
-    Used by the transcription worker.
-
-    Args:
-        job_id: The ID of the job
-        update_data: The update data
-        db: Database session
-
-    Returns:
-        The updated transcription job
-    """
-    try:
-        complete_legacy_job(
-            "transcription",
-            job_id,
-            update_data.worker_id,
-            processing_time=update_data.processing_time_seconds,
-            error_details=update_data.error_details,
-        )
-        job = get_legacy_job_or_404(db, job_type="transcription", legacy_job_id=job_id)
-    except JobLeaseOwnershipError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-    return job
-
-
-@app.post("/transcription-jobs/{job_id}/fail", response_model=TranscriptionJobResponse)
-async def fail_transcription_job(job_id: str, update_data: TranscriptionJobUpdate, db: Session = Depends(get_db)):
-    """
-    Mark a transcription job as failed.
-    Used by the transcription worker.
-
-    Args:
-        job_id: The ID of the job
-        update_data: The update data
-        db: Database session
-
-    Returns:
-        The updated transcription job
-    """
-    try:
-        fail_legacy_job(
-            "transcription",
-            job_id,
-            update_data.worker_id,
-            error_details=update_data.error_details,
-        )
-        job = get_legacy_job_or_404(db, job_type="transcription", legacy_job_id=job_id)
-    except JobLeaseOwnershipError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-    return job
-
-
-@app.post("/transcription-jobs/{job_id}/retry", response_model=TranscriptionJobResponse)
-async def retry_transcription_job(job_id: str, db: Session = Depends(get_db)):
-    """
-    Retry a failed transcription job by setting its status back to pending.
-
-    Args:
-        job_id: The ID of the job to retry
-        db: Database session
-
-    Returns:
-        The updated transcription job
-    """
-    try:
-        retry_legacy_job("transcription", job_id)
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-
-    logger.info("Transcription job %s has been reset to pending status for retry", job_id)
-    return get_legacy_job_or_404(db, job_type="transcription", legacy_job_id=job_id)
-
-
-@app.post("/summarization-jobs/", response_model=SummarizationJobResponse)
-async def create_summarization_job_endpoint(job_data: SummarizationJobCreate, db: Session = Depends(get_db)):
-    """
-    Create a new summarization job.
-    Used by the transcription worker.
-
-    Args:
-        job_data: The job data
-        db: Database session
-
-    Returns:
-        The created summarization job
-    """
-    logger.info(f"Creating summarization job for transcript: {job_data.transcript_id}")
-
-    # Check if the transcript exists
-    transcript = db.query(Transcript).filter(Transcript.id == job_data.transcript_id).first()
-    if not transcript:
-        raise HTTPException(status_code=404, detail=f"Transcript not found: {job_data.transcript_id}")
-
-    try:
-        unified_job = create_summarization_job_for_transcript(
-            job_data.transcript_id,
-            content_profile=job_data.content_profile,
-        )
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-
-    return get_legacy_job_or_404(
-        db,
-        job_type="summarization",
-        legacy_job_id=str(unified_job["legacy_job_id"]),
-    )
-
-
-@app.post("/summarization-jobs/claim", response_model=Optional[SummarizationJobResponse])
-async def claim_summarization_job(request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
-    """Atomically claim the next available summarization job."""
-    unified_job = claim_next_summarization_job(request_data.worker_id)
-    if not unified_job:
-        return None
-
-    return get_legacy_job_or_404(
-        db,
-        job_type="summarization",
-        legacy_job_id=str(unified_job["legacy_job_id"]),
-    )
-
-
-@app.post("/summarization-jobs/{job_id}/heartbeat", response_model=SummarizationJobResponse)
-async def heartbeat_summarization_job(job_id: str, request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
-    """Refresh a summarization job lease for the owning worker."""
-    try:
-        heartbeat_legacy_job("summarization", job_id, request_data.worker_id)
-        job = get_legacy_job_or_404(db, job_type="summarization", legacy_job_id=job_id)
-    except JobLeaseOwnershipError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-    return job
-
-
-@app.get("/summarization-jobs", response_model=PaginatedResponse[SummarizationJobResponse])
-async def get_summarization_jobs(
-    status: Optional[str] = None,
-    transcript_id: Optional[str] = None,
-    limit: int = Query(default=50, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-):
-    """
-    Get all summarization jobs, optionally filtered by status and transcript_id.
-    Used by the summarization worker and frontend.
-
-    Args:
-        status: Optional status to filter by
-        transcript_id: Optional transcript ID to filter by
-        db: Database session
-
-    Returns:
-        List of summarization jobs
-    """
-    query = db.query(SummarizationJob)
-
-    if status:
-        query = query.filter(SummarizationJob.status == status)
-    
-    if transcript_id:
-        query = query.filter(SummarizationJob.transcript_id == transcript_id)
-
-    query = query.order_by(SummarizationJob.created_at.desc())
-    jobs, total = paginate_query(query, limit=limit, offset=offset)
-    return build_paginated_response(jobs, total=total, limit=limit, offset=offset)
-
-
-@app.get("/summarization-jobs/{job_id}", response_model=SummarizationJobResponse)
-async def get_summarization_job(job_id: str, db: Session = Depends(get_db)):
-    """
-    Get a summarization job by ID.
-
-    Args:
-        job_id: The ID of the job
-        db: Database session
-
-    Returns:
-        The summarization job
-    """
-    job = db.query(SummarizationJob).filter(SummarizationJob.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Summarization job not found: {job_id}")
-    return job
-
-
-@app.post("/summarization-jobs/{job_id}/complete", response_model=SummarizationJobResponse)
-async def complete_summarization_job(job_id: str, update_data: SummarizationJobUpdate, db: Session = Depends(get_db)):
-    """
-    Mark a summarization job as completed.
-    Used by the summarization worker.
-
-    Args:
-        job_id: The ID of the job
-        update_data: The update data
-        db: Database session
-
-    Returns:
-        The updated summarization job
-    """
-    try:
-        complete_legacy_job(
-            "summarization",
-            job_id,
-            update_data.worker_id,
-            processing_time=update_data.processing_time_seconds,
-            error_details=update_data.error_details,
-        )
-        job = get_legacy_job_or_404(db, job_type="summarization", legacy_job_id=job_id)
-    except JobLeaseOwnershipError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-    return job
-
-
-@app.post("/summarization-jobs/{job_id}/fail", response_model=SummarizationJobResponse)
-async def fail_summarization_job(job_id: str, update_data: SummarizationJobUpdate, db: Session = Depends(get_db)):
-    """
-    Mark a summarization job as failed.
-    Used by the summarization worker.
-
-    Args:
-        job_id: The ID of the job
-        update_data: The update data
-        db: Database session
-
-    Returns:
-        The updated summarization job
-    """
-    try:
-        fail_legacy_job(
-            "summarization",
-            job_id,
-            update_data.worker_id,
-            error_details=update_data.error_details,
-        )
-        job = get_legacy_job_or_404(db, job_type="summarization", legacy_job_id=job_id)
-    except JobLeaseOwnershipError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-    return job
-
-
 @app.post("/summaries/", response_model=SummaryResponse)
 async def create_summary(summary_data: SummaryCreate, db: Session = Depends(get_db)):
     """
@@ -1955,7 +1195,7 @@ async def create_summary(summary_data: SummaryCreate, db: Session = Depends(get_
         transcript_id=str(summary.transcript_id),
     )
 
-    return build_summary_response(summary)
+    return serialize_summary(summary)
 
 
 @app.patch("/transcripts/{transcript_id}", response_model=TranscriptResponse)
@@ -1989,7 +1229,7 @@ async def update_transcript(transcript_id: str, update_data: dict, db: Session =
         video_id=str(transcript.video_id) if transcript.video_id else None,
     )
 
-    return transcript
+    return serialize_transcript(transcript)
 
 
 @app.put("/transcripts/{transcript_id}/segments", response_model=TranscriptResponse)
@@ -2019,7 +1259,7 @@ async def update_transcript_segments(transcript_id: str, update_data: Transcript
         video_id=str(transcript.video_id) if transcript.video_id else None,
     )
 
-    return transcript
+    return serialize_transcript(transcript)
 
 
 @app.put("/transcripts/{transcript_id}/speaker-aliases", response_model=TranscriptResponse)
@@ -2047,7 +1287,7 @@ async def update_transcript_speaker_aliases(
         video_id=str(transcript.video_id) if transcript.video_id else None,
     )
 
-    return transcript
+    return serialize_transcript(transcript)
 
 
 @app.patch("/transcripts/{transcript_id}/review", response_model=TranscriptResponse)
@@ -2076,7 +1316,7 @@ async def update_transcript_review(
         status=transcript.review_status,
     )
 
-    return transcript
+    return serialize_transcript(transcript)
 
 
 @app.get("/transcripts/{transcript_id}/comments", response_model=List[TranscriptCommentResponse])
@@ -2189,7 +1429,7 @@ async def create_transcript(transcript_data: TranscriptCreate, db: Session = Dep
         video_id=str(transcript.video_id),
     )
 
-    return transcript
+    return serialize_transcript(transcript)
 
 
 @app.patch("/videos/{video_id}", response_model=VideoResponse)
@@ -2276,7 +1516,7 @@ def list_videos(
 
     videos, total = paginate_query(query, limit=limit, offset=offset)
     return build_paginated_response(
-        videos,
+        [build_video_response(video) for video in videos],
         total=total,
         limit=limit,
         offset=offset,
@@ -2299,7 +1539,7 @@ def get_video(video_id: str, db: Session = Depends(get_db)):
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-    return video
+    return build_video_response(video)
 
 
 @app.get("/videos/{video_id}/download")
@@ -2437,7 +1677,12 @@ def list_transcripts(
         query = query.filter(Transcript.video_id == video_id)
     query = query.order_by(Transcript.created_at.desc())
     transcripts, total = paginate_query(query, limit=limit, offset=offset)
-    return build_paginated_response(transcripts, total=total, limit=limit, offset=offset)
+    return build_paginated_response(
+        [serialize_transcript(transcript) for transcript in transcripts],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.get("/transcripts/{transcript_id}")
@@ -2455,7 +1700,7 @@ def get_transcript(transcript_id: str, db: Session = Depends(get_db)):
     transcript = db.query(Transcript).filter(Transcript.id == transcript_id).first()
     if not transcript:
         raise HTTPException(status_code=404, detail="Transcript not found")
-    return transcript
+    return serialize_transcript(transcript)
 
 
 @app.get("/transcripts/{transcript_id}/export")
@@ -2632,7 +1877,7 @@ async def restore_transcript_revision(
         video_id=str(transcript.video_id) if transcript.video_id else None,
     )
 
-    return transcript
+    return serialize_transcript(transcript)
 
 
 @app.get("/summaries/", response_model=PaginatedResponse[SummaryResponse])
@@ -2658,7 +1903,7 @@ def list_summaries(
     query = query.order_by(Summary.created_at.desc())
     summaries, total = paginate_query(query, limit=limit, offset=offset)
     return build_paginated_response(
-        [build_summary_response(summary) for summary in summaries],
+        [serialize_summary(summary) for summary in summaries],
         total=total,
         limit=limit,
         offset=offset,
@@ -2680,262 +1925,7 @@ def get_summary(summary_id: str, db: Session = Depends(get_db)):
     summary = db.query(Summary).filter(Summary.id == summary_id).first()
     if not summary:
         raise HTTPException(status_code=404, detail="Summary not found")
-    return build_summary_response(summary)
-
-
-@app.post("/translation-jobs/", response_model=TranslationJobResponse)
-async def create_translation_job_endpoint(job_data: TranslationJobCreate, db: Session = Depends(get_db)):
-    """
-    Create a new translation job.
-
-    Args:
-        job_data: The job data
-        db: Database session
-
-    Returns:
-        The created translation job
-    """
-    logger.info(f"Creating translation job for transcript: {job_data.transcript_id} to {job_data.target_language}")
-
-    # Check if the transcript exists
-    transcript = db.query(Transcript).filter(Transcript.id == job_data.transcript_id).first()
-    if not transcript:
-        raise HTTPException(status_code=404, detail=f"Transcript not found: {job_data.transcript_id}")
-
-    style_guide = normalize_translation_style_guide(job_data.style_guide)
-    glossary_terms = normalize_glossary_terms(job_data.glossary_terms)
-
-    try:
-        unified_job = create_translation_job_for_transcript(
-            job_data.transcript_id,
-            job_data.target_language,
-            job_data.source_language,
-            style_guide=style_guide,
-            glossary_terms=glossary_terms,
-        )
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-
-    return get_legacy_job_or_404(
-        db,
-        job_type="translation",
-        legacy_job_id=str(unified_job["legacy_job_id"]),
-    )
-
-
-@app.post("/translation-jobs/claim", response_model=Optional[TranslationJobResponse])
-async def claim_translation_job(request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
-    """Atomically claim the next available translation job."""
-    unified_job = claim_next_translation_job(request_data.worker_id)
-    if not unified_job:
-        return None
-
-    return get_legacy_job_or_404(
-        db,
-        job_type="translation",
-        legacy_job_id=str(unified_job["legacy_job_id"]),
-    )
-
-
-@app.post("/translation-jobs/{job_id}/heartbeat", response_model=TranslationJobResponse)
-async def heartbeat_translation_job(job_id: str, request_data: LeaseWorkerRequest, db: Session = Depends(get_db)):
-    """Refresh a translation job lease for the owning worker."""
-    try:
-        heartbeat_legacy_job("translation", job_id, request_data.worker_id)
-        job = get_legacy_job_or_404(db, job_type="translation", legacy_job_id=job_id)
-    except JobLeaseOwnershipError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-    return job
-
-
-@app.get("/translation-jobs", response_model=PaginatedResponse[TranslationJobResponse])
-async def get_translation_jobs(
-    status: Optional[str] = None,
-    transcript_id: Optional[str] = None,
-    limit: int = Query(default=50, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-):
-    """
-    Get all translation jobs, optionally filtered by status and transcript_id.
-    Used by the translation worker and frontend.
-
-    Args:
-        status: Optional status to filter by
-        transcript_id: Optional transcript ID to filter by
-        db: Database session
-
-    Returns:
-        List of translation jobs
-    """
-    query = db.query(TranslationJob)
-
-    if status:
-        query = query.filter(TranslationJob.status == status)
-
-    if transcript_id:
-        query = query.filter(TranslationJob.transcript_id == transcript_id)
-
-    query = query.order_by(TranslationJob.created_at.desc())
-    jobs, total = paginate_query(query, limit=limit, offset=offset)
-    return build_paginated_response(jobs, total=total, limit=limit, offset=offset)
-
-
-@app.get("/translation-jobs/{job_id}", response_model=TranslationJobResponse)
-async def get_translation_job(job_id: str, db: Session = Depends(get_db)):
-    """
-    Get a translation job by ID.
-
-    Args:
-        job_id: The ID of the job
-        db: Database session
-
-    Returns:
-        The translation job
-    """
-    job = db.query(TranslationJob).filter(TranslationJob.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Translation job not found: {job_id}")
-    return job
-
-
-@app.get("/jobs", response_model=PaginatedResponse[UnifiedJobResponse])
-def list_unified_jobs(
-    job_type: Optional[Literal["summarization", "transcription", "translation"]] = None,
-    status: Optional[str] = None,
-    subject_type: Optional[Literal["transcript", "video"]] = None,
-    subject_id: Optional[str] = None,
-    limit: int = Query(default=50, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-):
-    """
-    List canonical orchestration jobs across all legacy job tables.
-    """
-    query = db.query(UnifiedJob)
-    if job_type:
-        query = query.filter(UnifiedJob.job_type == job_type)
-    if status:
-        query = query.filter(UnifiedJob.status == status)
-    if subject_type:
-        query = query.filter(UnifiedJob.subject_type == subject_type)
-    if subject_id:
-        query = query.filter(UnifiedJob.subject_id == subject_id)
-
-    query = query.order_by(UnifiedJob.created_at.desc(), UnifiedJob.id.desc())
-    jobs, total = paginate_query(query, limit=limit, offset=offset)
-    return build_paginated_response(jobs, total=total, limit=limit, offset=offset)
-
-
-@app.get("/jobs/{job_id}", response_model=UnifiedJobResponse)
-def get_unified_job(job_id: str, db: Session = Depends(get_db)):
-    """
-    Get a canonical orchestration job by ID.
-    """
-    job = db.query(UnifiedJob).filter(UnifiedJob.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
-
-
-@app.get("/jobs/{job_id}/attempts", response_model=List[JobAttemptResponse])
-def list_job_attempts(job_id: str, db: Session = Depends(get_db)):
-    """
-    List attempts for a canonical orchestration job.
-    """
-    job = db.query(UnifiedJob).filter(UnifiedJob.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    return (
-        db.query(JobAttempt)
-        .filter(JobAttempt.job_id == job_id)
-        .order_by(JobAttempt.attempt_number.desc(), JobAttempt.created_at.desc())
-        .all()
-    )
-
-
-@app.post("/jobs/{job_id}/cancel", response_model=UnifiedJobResponse)
-def cancel_unified_job(job_id: str):
-    """
-    Request cancellation for a unified orchestration job.
-    """
-    try:
-        return request_job_cancellation(job_id)
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-
-
-@app.post("/jobs/{job_id}/retry", response_model=UnifiedJobResponse)
-def retry_unified_job(job_id: str):
-    """
-    Retry a failed or cancelled unified orchestration job.
-    """
-    try:
-        return retry_job(job_id)
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-
-
-@app.post("/translation-jobs/{job_id}/complete", response_model=TranslationJobResponse)
-async def complete_translation_job(job_id: str, update_data: TranslationJobUpdate, db: Session = Depends(get_db)):
-    """
-    Mark a translation job as completed.
-    Used by the translation worker.
-
-    Args:
-        job_id: The ID of the job
-        update_data: The update data
-        db: Database session
-
-    Returns:
-        The updated translation job
-    """
-    try:
-        complete_legacy_job(
-            "translation",
-            job_id,
-            update_data.worker_id,
-            processing_time=update_data.processing_time_seconds,
-            error_details=update_data.error_details,
-        )
-        job = get_legacy_job_or_404(db, job_type="translation", legacy_job_id=job_id)
-    except JobLeaseOwnershipError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-    return job
-
-
-@app.post("/translation-jobs/{job_id}/fail", response_model=TranslationJobResponse)
-async def fail_translation_job(job_id: str, update_data: TranslationJobUpdate, db: Session = Depends(get_db)):
-    """
-    Mark a translation job as failed.
-    Used by the translation worker.
-
-    Args:
-        job_id: The ID of the job
-        update_data: The update data
-        db: Database session
-
-    Returns:
-        The updated translation job
-    """
-    try:
-        fail_legacy_job(
-            "translation",
-            job_id,
-            update_data.worker_id,
-            error_details=update_data.error_details,
-        )
-        job = get_legacy_job_or_404(db, job_type="translation", legacy_job_id=job_id)
-    except JobLeaseOwnershipError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise translate_job_domain_error(error) from error
-    return job
+    return serialize_summary(summary)
 
 
 @app.post("/translated-transcripts/", response_model=TranslatedTranscriptResponse)
@@ -3015,7 +2005,7 @@ async def create_translated_transcript(transcript_data: TranslatedTranscriptCrea
             translated_transcript_id=str(translated_transcript.id),
         )
 
-    return translated_transcript
+    return serialize_translated_transcript(translated_transcript)
 
 
 @app.get("/translated-transcripts/", response_model=PaginatedResponse[TranslatedTranscriptResponse])
@@ -3049,7 +2039,12 @@ def list_translated_transcripts(
 
     if language:
         paginated_items, total = paginate_items(translated_transcripts, limit=limit, offset=offset)
-        return build_paginated_response(paginated_items, total=total, limit=limit, offset=offset)
+        return build_paginated_response(
+            [serialize_translated_transcript(item) for item in paginated_items],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
 
     latest_translations_by_language = {}
     for translated_transcript in translated_transcripts:
@@ -3058,7 +2053,12 @@ def list_translated_transcripts(
 
     latest_translations = list(latest_translations_by_language.values())
     paginated_items, total = paginate_items(latest_translations, limit=limit, offset=offset)
-    return build_paginated_response(paginated_items, total=total, limit=limit, offset=offset)
+    return build_paginated_response(
+        [serialize_translated_transcript(item) for item in paginated_items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.get("/translated-transcripts/{translated_transcript_id}")
@@ -3071,7 +2071,7 @@ def get_translated_transcript(translated_transcript_id: str, db: Session = Depen
     )
     if not translated_transcript:
         raise HTTPException(status_code=404, detail="Translated transcript not found")
-    return translated_transcript
+    return serialize_translated_transcript(translated_transcript)
 
 
 @app.get("/translated-transcripts/{translated_transcript_id}/export")
@@ -3180,7 +2180,7 @@ async def update_translated_transcript_segments(translated_transcript_id: str, u
         translated_transcript_id=str(translated_transcript.id),
     )
 
-    return translated_transcript
+    return serialize_translated_transcript(translated_transcript)
 
 @app.get("/search", response_model=PaginatedResponse[SearchResultResponse])
 async def search_transcripts(

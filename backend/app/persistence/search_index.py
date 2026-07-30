@@ -2,41 +2,75 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from backend.app.persistence.models import Transcript, TranscriptSegmentSearch, Video
-from backend.app.persistence.segment_sync import normalize_segments
+from backend.app.domain.canonical_metadata import (
+    build_segments_snapshot_from_rows,
+    normalize_segments,
+)
+from backend.app.persistence.models import Transcript, TranscriptSegmentRow, TranscriptSegmentSearch, Video
 from sqlalchemy import Float, func, or_
 from sqlalchemy.orm import Session
 
-def _build_search_rows(transcript: Transcript) -> List[TranscriptSegmentSearch]:
-    rows: List[TranscriptSegmentSearch] = []
-    for segment in normalize_segments(
-        transcript.segments,
-        fallback_content=transcript.content,
-    ):
-        rows.append(
-            TranscriptSegmentSearch(
-                transcript_id=str(transcript.id),
-                video_id=str(transcript.video_id) if transcript.video_id else None,
-                segment_id=segment["segment_id"],
-                start_time=segment["start_time"],
-                end_time=segment["end_time"],
-                text=segment["text"],
-                speaker=segment["speaker"],
-            )
+def _build_search_payloads(transcript: Transcript, db: Session) -> List[Dict[str, Any]]:
+    segment_rows = list(transcript.segment_rows or [])
+    if not segment_rows:
+        segment_rows = (
+            db.query(TranscriptSegmentRow)
+            .filter(TranscriptSegmentRow.transcript_id == transcript.id)
+            .order_by(TranscriptSegmentRow.segment_index.asc())
+            .all()
         )
 
-    return rows
+    segments = (
+        build_segments_snapshot_from_rows(segment_rows)
+        if segment_rows
+        else normalize_segments(
+            transcript.segments,
+            fallback_content=transcript.content,
+        )
+    )
+
+    return [
+        {
+            "transcript_id": str(transcript.id),
+            "video_id": str(transcript.video_id) if transcript.video_id else None,
+            "segment_id": segment["segment_id"] if "segment_id" in segment else segment["id"],
+            "start_time": segment["start_time"],
+            "end_time": segment["end_time"],
+            "text": segment["text"],
+            "speaker": segment.get("speaker"),
+        }
+        for segment in segments
+    ]
 
 
 def sync_transcript_search_rows(db: Session, transcript: Transcript) -> None:
     """Refresh the read model rows for a transcript."""
-    db.query(TranscriptSegmentSearch).filter(
-        TranscriptSegmentSearch.transcript_id == transcript.id
-    ).delete()
+    existing_rows = {
+        row.segment_id: row
+        for row in (
+            db.query(TranscriptSegmentSearch)
+            .filter(TranscriptSegmentSearch.transcript_id == transcript.id)
+            .all()
+        )
+    }
+    seen_segment_ids: set[int] = set()
+    for payload in _build_search_payloads(transcript, db):
+        segment_id = payload["segment_id"]
+        seen_segment_ids.add(segment_id)
+        existing_row = existing_rows.get(segment_id)
+        if existing_row is None:
+            db.add(TranscriptSegmentSearch(**payload))
+            continue
 
-    rows = _build_search_rows(transcript)
-    if rows:
-        db.add_all(rows)
+        existing_row.video_id = payload["video_id"]
+        existing_row.start_time = payload["start_time"]
+        existing_row.end_time = payload["end_time"]
+        existing_row.text = payload["text"]
+        existing_row.speaker = payload["speaker"]
+
+    for segment_id, existing_row in existing_rows.items():
+        if segment_id not in seen_segment_ids:
+            db.delete(existing_row)
     db.flush()
 
 
@@ -45,9 +79,9 @@ def rebuild_all_transcript_search_rows(db: Session) -> None:
     db.query(TranscriptSegmentSearch).delete()
     transcripts = db.query(Transcript).all()
     for transcript in transcripts:
-        rows = _build_search_rows(transcript)
+        rows = _build_search_payloads(transcript, db)
         if rows:
-            db.add_all(rows)
+            db.add_all(TranscriptSegmentSearch(**row) for row in rows)
     db.commit()
 
 

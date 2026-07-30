@@ -16,6 +16,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
     op.add_column(
         "summaries",
         sa.Column("content_profile", sa.String(), nullable=True),
@@ -25,7 +26,11 @@ def upgrade() -> None:
         sa.Column("summary_metadata", sa.JSON(), nullable=True),
     )
     op.execute("UPDATE summaries SET content_profile = 'generic' WHERE content_profile IS NULL")
-    op.alter_column("summaries", "content_profile", nullable=False)
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("summaries") as batch_op:
+            batch_op.alter_column("content_profile", existing_type=sa.String(), nullable=False)
+    else:
+        op.alter_column("summaries", "content_profile", nullable=False)
 
     op.add_column(
         "summarization_jobs",
@@ -34,6 +39,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
     op.drop_column("summarization_jobs", "content_profile")
-    op.drop_column("summaries", "summary_metadata")
-    op.drop_column("summaries", "content_profile")
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("summaries") as batch_op:
+            batch_op.drop_column("summary_metadata")
+            batch_op.drop_column("content_profile")
+    else:
+        op.drop_column("summaries", "summary_metadata")
+        op.drop_column("summaries", "content_profile")
