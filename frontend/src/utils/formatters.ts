@@ -1,3 +1,31 @@
+// Playback-position label for transcript segments (e.g. "05:03" or "2:05:03").
+// Distinct from formatDuration: 0 is a valid position (not "Unknown"), and
+// minutes stay zero-padded under an hour to match the mm:ss clock read-out
+// used across the transcript UI.
+export function formatTimestamp(seconds?: number | null): string {
+  if (seconds === undefined || seconds === null || Number.isNaN(seconds)) {
+    return "00:00";
+  }
+
+  const totalSeconds = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  // Roll over into an hours segment once the position reaches 60 minutes -
+  // without this branch, times past 1h render as e.g. "125:03" instead of
+  // "2:05:03".
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${remainingSeconds
+      .toString()
+      .padStart(2, "0")}`;
+  }
+
+  return `${minutes.toString().padStart(2, "0")}:${remainingSeconds
+    .toString()
+    .padStart(2, "0")}`;
+}
+
 export function formatDuration(seconds?: number | null): string {
   if (!seconds || Number.isNaN(seconds)) {
     return "Unknown";

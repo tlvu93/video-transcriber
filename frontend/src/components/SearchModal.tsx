@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { searchTranscripts } from "../api/videoService";
+import { formatTimestamp } from "../utils/formatters";
 
 function useDebouncedValue(value: string, delay: number): string {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -104,18 +105,6 @@ export default function SearchModal({
   function handleResultClick(videoId: string, startTime: number): void {
     navigate(`/videos/${videoId}?t=${startTime}`);
     onClose();
-  }
-
-  function formatTime(seconds: number): string {
-    if (!seconds) {
-      return "00:00";
-    }
-
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins.toString().padStart(2, "0")}:${secs
-      .toString()
-      .padStart(2, "0")}`;
   }
 
   function formatReviewStatus(reviewStatus?: string | null): string {
@@ -232,7 +221,7 @@ export default function SearchModal({
                 </p>
               </div>
               <div className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1 font-semibold text-[10px] text-primary uppercase tracking-[0.18em]">
-                {formatTime(result.start_time)}
+                {formatTimestamp(result.start_time)}
               </div>
             </div>
           </button>

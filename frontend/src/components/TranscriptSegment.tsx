@@ -1,6 +1,7 @@
 import type { KeyboardEvent, MouseEvent } from "react";
 import { useEffect, useState } from "react";
 import type { TranscriptSegment as TranscriptSegmentType } from "../types/domain";
+import { formatTimestamp } from "../utils/formatters";
 
 interface TranscriptSegmentProps {
   isActive: boolean;
@@ -31,23 +32,21 @@ export default function TranscriptSegment({
   const [speakerNameDraft, setSpeakerNameDraft] = useState(speakerName ?? "");
 
   useEffect(() => {
+    // Skip the sync while the segment is being edited so a live update
+    // (e.g. from the WebSocket feed) can't clobber an in-progress edit.
+    if (isEditing) {
+      return;
+    }
     setEditText(segment?.text || "");
-  }, [segment?.text]);
+  }, [segment?.text, isEditing]);
 
   useEffect(() => {
-    setSpeakerNameDraft(speakerName ?? "");
-  }, [speakerName]);
-
-  function formatTime(seconds: number | undefined | null): string {
-    if (seconds === undefined || seconds === null) {
-      return "00:00";
+    // Same guard as above, for the speaker-rename draft.
+    if (isEditingSpeaker) {
+      return;
     }
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = Math.floor(seconds % 60);
-    return `${minutes.toString().padStart(2, "0")}:${remainingSeconds
-      .toString()
-      .padStart(2, "0")}`;
-  }
+    setSpeakerNameDraft(speakerName ?? "");
+  }, [speakerName, isEditingSpeaker]);
 
   const safeSegment = {
     id: segment.id || 0,
@@ -148,7 +147,7 @@ export default function TranscriptSegment({
       <div className="flex items-start gap-3">
         {showTimestamps && (
           <span className="mt-0.5 flex-shrink-0 rounded-full border border-white/10 bg-white/5 px-2 py-1 font-mono text-[10px] text-muted-foreground uppercase tracking-[0.16em]">
-            {formatTime(safeSegment.start_time)}
+            {formatTimestamp(safeSegment.start_time)}
           </span>
         )}
         {showSpeaker &&
